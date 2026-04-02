@@ -63,6 +63,24 @@ function getUpgradeCost(cell) {
   return Math.max(50, Math.floor(cell.price / 2));
 }
 
+function getMortgageValue(cell) {
+  if (!cell?.price) {
+    return null;
+  }
+
+  return Math.max(30, Math.floor(cell.price / 2));
+}
+
+function getUnmortgageCost(cell) {
+  const mortgageValue = getMortgageValue(cell);
+
+  if (mortgageValue == null) {
+    return null;
+  }
+
+  return Math.ceil(mortgageValue * 1.1);
+}
+
 function getRentHint(cell, level = 0) {
   if (!cell?.price) {
     return null;
@@ -130,6 +148,9 @@ function App() {
   const [playerId, setPlayerId] = useState("");
   const [playerToken, setPlayerToken] = useState("");
   const [currentRoom, setCurrentRoom] = useState(null);
+  const [selectedTradeTargetId, setSelectedTradeTargetId] = useState("");
+  const [selectedTradePosition, setSelectedTradePosition] = useState("");
+  const [tradeCashAmount, setTradeCashAmount] = useState("0");
   const currentRoomCode = currentRoom?.room_code ?? null;
   const isLobbyOpen = currentRoom?.status === "lobby";
   const isGameOpen = currentRoom?.status === "in_game";
@@ -137,7 +158,9 @@ function App() {
   const boardCells = currentRoom?.game?.board ?? [];
   const propertyOwners = currentRoom?.game?.property_owners ?? {};
   const propertyLevels = currentRoom?.game?.property_levels ?? {};
+  const propertyMortgaged = currentRoom?.game?.property_mortgaged ?? {};
   const pendingPurchase = currentRoom?.game?.pending_purchase ?? null;
+  const pendingTrade = currentRoom?.game?.pending_trade ?? null;
   const lastDrawnCard = currentRoom?.game?.last_drawn_card ?? null;
   const winnerId = currentRoom?.game?.winner_id ?? null;
   const winnerPlayer =
@@ -157,7 +180,8 @@ function App() {
   const canRollDice =
     isGameOpen &&
     currentTurnPlayerId === playerId &&
-    (currentRoom?.game?.turn.can_roll ?? false);
+    (currentRoom?.game?.turn.can_roll ?? false) &&
+    !pendingTrade;
   const canResolvePurchase =
     isGameOpen &&
     pendingPurchase?.player_id === playerId &&
@@ -174,6 +198,9 @@ function App() {
   const lastLandedCell =
     boardCells.find((cell) => cell.index === lastLandedPosition) ?? null;
   const lastLandedCellLevel = lastLandedCell ? propertyLevels[lastLandedCell.index] ?? 0 : 0;
+  const lastLandedCellMortgaged = lastLandedCell
+    ? Boolean(propertyMortgaged[lastLandedCell.index])
+    : false;
   const lastLandedCellOwner = lastLandedCell
     ? getPlayerById(propertyOwners[lastLandedCell.index])
     : null;
@@ -181,6 +208,14 @@ function App() {
     boardCells.find((cell) => cell.index === pendingPurchase?.position) ?? null;
   const pendingPurchasePlayer =
     currentRoom?.players.find((player) => player.player_id === pendingPurchase?.player_id) ??
+    null;
+  const pendingTradeCell =
+    boardCells.find((cell) => cell.index === pendingTrade?.position) ?? null;
+  const pendingTradeProposer =
+    currentRoom?.players.find((player) => player.player_id === pendingTrade?.proposer_id) ??
+    null;
+  const pendingTradeReceiver =
+    currentRoom?.players.find((player) => player.player_id === pendingTrade?.receiver_id) ??
     null;
 
   function getCellByPosition(position) {
@@ -204,6 +239,32 @@ function App() {
       groupCells.every((cell) => propertyOwners[cell.index] === ownerId);
   }
 
+  function colorGroupHasMortgage(colorGroup) {
+    if (!colorGroup) {
+      return false;
+    }
+
+    return boardCells.some(
+      (cell) =>
+        cell.cell_type === "property" &&
+        cell.color_group === colorGroup &&
+        propertyMortgaged[cell.index],
+    );
+  }
+
+  function colorGroupHasUpgrade(colorGroup) {
+    if (!colorGroup) {
+      return false;
+    }
+
+    return boardCells.some(
+      (cell) =>
+        cell.cell_type === "property" &&
+        cell.color_group === colorGroup &&
+        (propertyLevels[cell.index] ?? 0) > 0,
+    );
+  }
+
   const upgradeableProperties =
     currentPlayer == null
       ? []
@@ -220,15 +281,147 @@ function App() {
             return false;
           }
 
+          if (colorGroupHasMortgage(cell.color_group)) {
+            return false;
+          }
+
           return (propertyLevels[cell.index] ?? 0) < MAX_PROPERTY_LEVEL;
         });
 
-  const canUpgradeProperties =
+  const canUsePreRollDesk =
     isGameOpen &&
     currentTurnPlayerId === playerId &&
     (currentRoom?.game?.turn.can_roll ?? false) &&
     !pendingPurchase &&
+    !pendingTrade &&
     Boolean(playerToken);
+  const canUpgradeProperties = canUsePreRollDesk;
+  const canManageMortgages = canUsePreRollDesk;
+  const mortgageableCells =
+    currentPlayer == null
+      ? []
+      : boardCells.filter((cell) => {
+          if (!cell.price) {
+            return false;
+          }
+
+          if (propertyOwners[cell.index] !== currentPlayer.player_id) {
+            return false;
+          }
+
+          if (propertyMortgaged[cell.index]) {
+            return false;
+          }
+
+          if (cell.cell_type === "property" && colorGroupHasUpgrade(cell.color_group)) {
+            return false;
+          }
+
+          return true;
+        });
+  const unmortgageableCells =
+    currentPlayer == null
+      ? []
+      : boardCells.filter(
+          (cell) =>
+            cell.price &&
+            propertyOwners[cell.index] === currentPlayer.player_id &&
+            propertyMortgaged[cell.index],
+        );
+  const tradeTargets =
+    currentPlayer == null
+      ? []
+      : currentRoom.players.filter((player) => player.player_id !== currentPlayer.player_id);
+  const tradeableCells =
+    currentPlayer == null
+      ? []
+      : boardCells.filter((cell) => {
+          if (!cell.price) {
+            return false;
+          }
+
+          if (propertyOwners[cell.index] !== currentPlayer.player_id) {
+            return false;
+          }
+
+          if (propertyMortgaged[cell.index]) {
+            return false;
+          }
+
+          if (cell.cell_type === "property" && colorGroupHasUpgrade(cell.color_group)) {
+            return false;
+          }
+
+          return true;
+        });
+  const canProposeTrade = canUsePreRollDesk;
+  const canAcceptTrade =
+    isGameOpen &&
+    pendingTrade?.receiver_id === playerId &&
+    Boolean(playerToken);
+  const canRejectTrade =
+    isGameOpen &&
+    (pendingTrade?.receiver_id === playerId || pendingTrade?.proposer_id === playerId) &&
+    Boolean(playerToken);
+
+  useEffect(() => {
+    const nextTradeTargets =
+      currentPlayer == null
+        ? []
+        : currentRoom?.players.filter((player) => player.player_id !== currentPlayer.player_id) ??
+          [];
+
+    if (!nextTradeTargets.some((player) => player.player_id === selectedTradeTargetId)) {
+      setSelectedTradeTargetId(nextTradeTargets[0]?.player_id ?? "");
+    }
+  }, [selectedTradeTargetId, currentPlayer, currentRoom]);
+
+  useEffect(() => {
+    const nextBoardCells = currentRoom?.game?.board ?? [];
+    const nextPropertyOwners = currentRoom?.game?.property_owners ?? {};
+    const nextPropertyLevels = currentRoom?.game?.property_levels ?? {};
+    const nextPropertyMortgaged = currentRoom?.game?.property_mortgaged ?? {};
+
+    const localColorGroupHasUpgrade = (colorGroup) => {
+      if (!colorGroup) {
+        return false;
+      }
+
+      return nextBoardCells.some(
+        (cell) =>
+          cell.cell_type === "property" &&
+          cell.color_group === colorGroup &&
+          (nextPropertyLevels[cell.index] ?? 0) > 0,
+      );
+    };
+
+    const nextTradeableCells =
+      currentPlayer == null
+        ? []
+        : nextBoardCells.filter((cell) => {
+            if (!cell.price) {
+              return false;
+            }
+
+            if (nextPropertyOwners[cell.index] !== currentPlayer.player_id) {
+              return false;
+            }
+
+            if (nextPropertyMortgaged[cell.index]) {
+              return false;
+            }
+
+            if (cell.cell_type === "property" && localColorGroupHasUpgrade(cell.color_group)) {
+              return false;
+            }
+
+            return true;
+          });
+
+    if (!nextTradeableCells.some((cell) => String(cell.index) === selectedTradePosition)) {
+      setSelectedTradePosition(nextTradeableCells[0] ? String(nextTradeableCells[0].index) : "");
+    }
+  }, [selectedTradePosition, currentPlayer, currentRoom]);
 
   useEffect(() => {
     fetch(`${API_BASE_URL}/`)
@@ -772,8 +965,247 @@ function App() {
     }
   }
 
+  async function handleMortgageProperty(position) {
+    if (!currentRoom || !playerToken) {
+      setStatus("Join the active game before managing mortgages.");
+      return;
+    }
+
+    const cell = boardCells.find((boardCell) => boardCell.index === position) ?? null;
+    const mortgageValue = getMortgageValue(cell);
+
+    if (!cell || mortgageValue == null) {
+      setStatus("That cell cannot be mortgaged.");
+      return;
+    }
+
+    setIsSubmitting(true);
+    setStatus(`Mortgaging ${cell.name}...`);
+
+    try {
+      const response = await fetch(
+        `${API_BASE_URL}/rooms/${currentRoom.room_code}/mortgage`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            player_token: playerToken,
+            position,
+          }),
+        },
+      );
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.detail || "Mortgage failed.");
+      }
+
+      setPlayerId(data.player_id);
+      setPlayerToken(data.player_token);
+      setCurrentRoom(data.room);
+      saveStoredSession({
+        player_id: data.player_id,
+        player_token: data.player_token,
+        room_code: data.room.room_code,
+        nickname: currentPlayer?.nickname ?? nickname.trim(),
+      });
+      setStatus(`You mortgaged ${cell.name} for $${mortgageValue}.`);
+    } catch (error) {
+      setStatus(error.message);
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
+  async function handleUnmortgageProperty(position) {
+    if (!currentRoom || !playerToken) {
+      setStatus("Join the active game before managing mortgages.");
+      return;
+    }
+
+    const cell = boardCells.find((boardCell) => boardCell.index === position) ?? null;
+    const unmortgageCost = getUnmortgageCost(cell);
+
+    if (!cell || unmortgageCost == null) {
+      setStatus("That cell cannot be unmortgaged.");
+      return;
+    }
+
+    setIsSubmitting(true);
+    setStatus(`Unmortgaging ${cell.name}...`);
+
+    try {
+      const response = await fetch(
+        `${API_BASE_URL}/rooms/${currentRoom.room_code}/unmortgage`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            player_token: playerToken,
+            position,
+          }),
+        },
+      );
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.detail || "Unmortgage failed.");
+      }
+
+      setPlayerId(data.player_id);
+      setPlayerToken(data.player_token);
+      setCurrentRoom(data.room);
+      saveStoredSession({
+        player_id: data.player_id,
+        player_token: data.player_token,
+        room_code: data.room.room_code,
+        nickname: currentPlayer?.nickname ?? nickname.trim(),
+      });
+      setStatus(`You unmortgaged ${cell.name} for $${unmortgageCost}.`);
+    } catch (error) {
+      setStatus(error.message);
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
+  async function handleProposeTrade() {
+    if (!currentRoom || !playerToken || !currentPlayer) {
+      setStatus("Join the active game before proposing a trade.");
+      return;
+    }
+
+    const targetPlayer = getPlayerById(selectedTradeTargetId);
+    const position = Number(selectedTradePosition);
+    const cell = boardCells.find((boardCell) => boardCell.index === position) ?? null;
+    const cashAmount = Number.parseInt(tradeCashAmount, 10);
+
+    if (!targetPlayer) {
+      setStatus("Choose a player to trade with.");
+      return;
+    }
+
+    if (!cell || !Number.isInteger(position)) {
+      setStatus("Choose one of your tradeable cells.");
+      return;
+    }
+
+    if (!Number.isInteger(cashAmount) || cashAmount < 0) {
+      setStatus("Enter a valid cash amount for the trade.");
+      return;
+    }
+
+    setIsSubmitting(true);
+    setStatus(`Offering ${cell.name} to ${targetPlayer.nickname}...`);
+
+    try {
+      const response = await fetch(
+        `${API_BASE_URL}/rooms/${currentRoom.room_code}/trade/propose`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            player_token: playerToken,
+            target_player_id: targetPlayer.player_id,
+            position,
+            cash_amount: cashAmount,
+          }),
+        },
+      );
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.detail || "Trade proposal failed.");
+      }
+
+      setPlayerId(data.player_id);
+      setPlayerToken(data.player_token);
+      setCurrentRoom(data.room);
+      saveStoredSession({
+        player_id: data.player_id,
+        player_token: data.player_token,
+        room_code: data.room.room_code,
+        nickname: currentPlayer.nickname,
+      });
+      setStatus(`Offered ${cell.name} to ${targetPlayer.nickname} for $${cashAmount}.`);
+    } catch (error) {
+      setStatus(error.message);
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
+  async function handleRespondTrade(accept) {
+    if (!currentRoom || !playerToken || !pendingTradeCell) {
+      setStatus("There is no pending trade to resolve.");
+      return;
+    }
+
+    const actionLabel = accept
+      ? "Accepting trade..."
+      : pendingTrade?.proposer_id === playerId
+        ? "Cancelling trade..."
+        : "Rejecting trade...";
+
+    setIsSubmitting(true);
+    setStatus(actionLabel);
+
+    try {
+      const response = await fetch(
+        `${API_BASE_URL}/rooms/${currentRoom.room_code}/trade/respond`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            player_token: playerToken,
+            accept,
+          }),
+        },
+      );
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.detail || "Trade response failed.");
+      }
+
+      setPlayerId(data.player_id);
+      setPlayerToken(data.player_token);
+      setCurrentRoom(data.room);
+      saveStoredSession({
+        player_id: data.player_id,
+        player_token: data.player_token,
+        room_code: data.room.room_code,
+        nickname: currentPlayer?.nickname ?? nickname.trim(),
+      });
+
+      if (accept) {
+        setStatus(`Accepted the trade for ${pendingTradeCell.name}.`);
+      } else if (pendingTrade?.proposer_id === playerId) {
+        setStatus(`Cancelled the trade for ${pendingTradeCell.name}.`);
+      } else {
+        setStatus(`Rejected the trade for ${pendingTradeCell.name}.`);
+      }
+    } catch (error) {
+      setStatus(error.message);
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
   return (
-    <main className="app-shell">
+    <main className={`app-shell${isGameOpen || isEliminated ? " is-game" : ""}`}>
       <section className="panel">
         <p className="eyebrow">Day 1 - React + FastAPI</p>
         <h1>Monopoly Online</h1>
@@ -963,8 +1395,8 @@ function App() {
               </p>
               {lastEffects.length > 0 && (
                 <div className="effect-list">
-                  {lastEffects.map((effect) => (
-                    <p key={effect}>{effect}</p>
+                  {lastEffects.map((effect, i) => (
+                    <p key={i}>{effect}</p>
                   ))}
                 </div>
               )}
@@ -1030,9 +1462,14 @@ function App() {
                     {lastLandedCell?.price && (
                       <p>
                         Price: <strong>${lastLandedCell.price}</strong>
-                        {getRentHint(lastLandedCell, lastLandedCellLevel) && (
+                        {!lastLandedCellMortgaged && getRentHint(lastLandedCell, lastLandedCellLevel) && (
                           <> &middot; {getRentHint(lastLandedCell, lastLandedCellLevel)}</>
                         )}
+                      </p>
+                    )}
+                    {lastLandedCellMortgaged && (
+                      <p>
+                        Mortgage: <strong>Active</strong> &middot; No rent while mortgaged
                       </p>
                     )}
                     {lastLandedCell?.cell_type === "property" && (
@@ -1085,6 +1522,197 @@ function App() {
                       <p>
                         Type: <strong>{formatCellType(pendingPurchaseCell.cell_type)}</strong>
                       </p>
+                    </section>
+                  )}
+
+                  {(pendingTrade || (tradeableCells.length > 0 && tradeTargets.length > 0)) && (
+                    <section className="trade-card board-center-section">
+                      <h3>Trade desk</h3>
+                      {pendingTrade ? (
+                        <>
+                          <p>
+                            <strong>{pendingTradeProposer?.nickname ?? "A player"}</strong> offers{" "}
+                            <strong>{pendingTradeCell?.name ?? pendingTrade.cell_name}</strong> to{" "}
+                            <strong>{pendingTradeReceiver?.nickname ?? "another player"}</strong> for{" "}
+                            <strong>${pendingTrade.cash_amount}</strong>.
+                          </p>
+                          <p className="trade-meta">
+                            Type:{" "}
+                            <strong>
+                              {formatCellType(pendingTradeCell?.cell_type ?? pendingTrade.cell_type)}
+                            </strong>
+                          </p>
+                          <div className="trade-actions">
+                            {canAcceptTrade && (
+                              <button
+                                type="button"
+                                className="trade-button accept-button"
+                                onClick={() => handleRespondTrade(true)}
+                                disabled={isSubmitting}
+                              >
+                                Accept trade
+                              </button>
+                            )}
+                            {canRejectTrade && (
+                              <button
+                                type="button"
+                                className="trade-button reject-button"
+                                onClick={() => handleRespondTrade(false)}
+                                disabled={isSubmitting}
+                              >
+                                {pendingTrade?.proposer_id === playerId ? "Cancel offer" : "Reject trade"}
+                              </button>
+                            )}
+                          </div>
+                          {!canAcceptTrade && !canRejectTrade && (
+                            <p className="trade-note">
+                              Waiting for {pendingTradeReceiver?.nickname ?? "the receiving player"} to
+                              resolve the offer.
+                            </p>
+                          )}
+                        </>
+                      ) : (
+                        <>
+                          <p>
+                            Offer one of your unmortgaged cells for cash before rolling. This MVP
+                            trade flow is property-for-cash only.
+                          </p>
+                          <div className="trade-form">
+                            <label className="trade-field">
+                              <span>Offer cell</span>
+                              <select
+                                className="trade-select"
+                                value={selectedTradePosition}
+                                onChange={(event) => setSelectedTradePosition(event.target.value)}
+                              >
+                                {tradeableCells.map((cell) => (
+                                  <option key={cell.index} value={cell.index}>
+                                    {cell.name}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                            <label className="trade-field">
+                              <span>Trade with</span>
+                              <select
+                                className="trade-select"
+                                value={selectedTradeTargetId}
+                                onChange={(event) => setSelectedTradeTargetId(event.target.value)}
+                              >
+                                {tradeTargets.map((player) => (
+                                  <option key={player.player_id} value={player.player_id}>
+                                    {player.nickname}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                            <label className="trade-field">
+                              <span>Cash requested</span>
+                              <input
+                                className="trade-input"
+                                type="number"
+                                min="0"
+                                step="1"
+                                value={tradeCashAmount}
+                                onChange={(event) => setTradeCashAmount(event.target.value)}
+                              />
+                            </label>
+                            <button
+                              type="button"
+                              className="trade-button"
+                              onClick={handleProposeTrade}
+                              disabled={
+                                isSubmitting ||
+                                !canProposeTrade ||
+                                tradeableCells.length === 0 ||
+                                tradeTargets.length === 0
+                              }
+                            >
+                              Propose trade
+                            </button>
+                          </div>
+                          {!canProposeTrade && (
+                            <p className="trade-note">
+                              Trades can only be proposed at the start of your own turn, before you
+                              roll.
+                            </p>
+                          )}
+                        </>
+                      )}
+                    </section>
+                  )}
+
+                  {(mortgageableCells.length > 0 || unmortgageableCells.length > 0) && (
+                    <section className="mortgage-card board-center-section">
+                      <h3>Mortgage desk</h3>
+                      <p>
+                        Use mortgages to raise cash before rolling. Mortgaged cells stop charging
+                        rent until you buy them back.
+                      </p>
+
+                      {mortgageableCells.length > 0 && (
+                        <div className="mortgage-group">
+                          <h4>Available to mortgage</h4>
+                          <div className="mortgage-list">
+                            {mortgageableCells.map((cell) => {
+                              const mortgageValue = getMortgageValue(cell);
+                              return (
+                                <article key={cell.index} className="mortgage-option">
+                                  <div>
+                                    <h5>{cell.name}</h5>
+                                    <p>
+                                      Value: <strong>${mortgageValue}</strong>
+                                    </p>
+                                  </div>
+                                  <button
+                                    type="button"
+                                    className="mortgage-button"
+                                    onClick={() => handleMortgageProperty(cell.index)}
+                                    disabled={isSubmitting || !canManageMortgages}
+                                  >
+                                    Mortgage
+                                  </button>
+                                </article>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
+
+                      {unmortgageableCells.length > 0 && (
+                        <div className="mortgage-group">
+                          <h4>Currently mortgaged</h4>
+                          <div className="mortgage-list">
+                            {unmortgageableCells.map((cell) => {
+                              const unmortgageCost = getUnmortgageCost(cell);
+                              return (
+                                <article key={cell.index} className="mortgage-option is-mortgaged">
+                                  <div>
+                                    <h5>{cell.name}</h5>
+                                    <p>
+                                      Buy-back cost: <strong>${unmortgageCost}</strong>
+                                    </p>
+                                  </div>
+                                  <button
+                                    type="button"
+                                    className="unmortgage-button"
+                                    onClick={() => handleUnmortgageProperty(cell.index)}
+                                    disabled={isSubmitting || !canManageMortgages}
+                                  >
+                                    Unmortgage
+                                  </button>
+                                </article>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
+
+                      {!canManageMortgages && (
+                        <p className="mortgage-note">
+                          Mortgages can only be managed at the start of your turn, before you roll.
+                        </p>
+                      )}
                     </section>
                   )}
 
@@ -1153,6 +1781,23 @@ function App() {
                         You can buy {pendingPurchaseCell.name} for ${pendingPurchase?.price} or pass.
                       </p>
                     )}
+                    {pendingTrade && !canAcceptTrade && !canRejectTrade && (
+                      <p className="purchase-note">
+                        Waiting for {pendingTradeReceiver?.nickname ?? "the receiving player"} to
+                        resolve the trade for {pendingTradeCell?.name ?? pendingTrade.cell_name}.
+                      </p>
+                    )}
+                    {canAcceptTrade && (
+                      <p className="purchase-note">
+                        You can accept or reject the trade for{" "}
+                        {pendingTradeCell?.name ?? pendingTrade.cell_name}.
+                      </p>
+                    )}
+                    {pendingTrade?.proposer_id === playerId && (
+                      <p className="purchase-note">
+                        Your turn is paused until the trade is accepted, rejected, or cancelled.
+                      </p>
+                    )}
                     {isCurrentPlayerInJail && (
                       <p className="jail-notice">You are in jail. Roll doubles to escape.</p>
                     )}
@@ -1218,6 +1863,9 @@ function App() {
                     >
                       <span className={`cell-band cell-band-${cell.cell_type}`} aria-hidden="true" />
                       <h4>{cell.name}</h4>
+                      {propertyMortgaged[cell.index] && (
+                        <p className="cell-mortgaged-badge">Mortgaged</p>
+                      )}
                       {cell.cell_type === "property" && (propertyLevels[cell.index] ?? 0) > 0 && (
                         <p className="cell-level-badge">
                           Level {propertyLevels[cell.index]}
@@ -1294,6 +1942,18 @@ function App() {
                       {
                         Object.values(propertyOwners).filter(
                           (ownerPlayerId) => ownerPlayerId === player.player_id,
+                        ).length
+                      }
+                    </strong>
+                  </p>
+                  <p>
+                    Mortgaged cells:{" "}
+                    <strong>
+                      {
+                        Object.entries(propertyMortgaged).filter(
+                          ([position, isMortgaged]) =>
+                            isMortgaged &&
+                            propertyOwners[Number(position)] === player.player_id,
                         ).length
                       }
                     </strong>

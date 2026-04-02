@@ -3,6 +3,7 @@ import string
 import threading
 import time
 import uuid
+import math
 
 from board_data import BOARD_CELLS, get_board_cells
 from card_data import draw_card
@@ -123,6 +124,14 @@ def _find_player_by_token(room: dict, player_token: str) -> dict:
     raise HTTPException(status_code=403, detail="Invalid player token.")
 
 
+def _find_player_by_id(room: dict, player_id: str) -> dict:
+    for player in room["players"]:
+        if player["player_id"] == player_id:
+            return player
+
+    raise HTTPException(status_code=404, detail="Player not found in this room.")
+
+
 def _touch_room(room: dict) -> None:
     room["last_activity"] = time.time()
 
@@ -165,6 +174,14 @@ def _get_upgrade_cost(cell: dict) -> int:
     return max(50, cell["price"] // 2)
 
 
+def _get_mortgage_value(cell: dict) -> int:
+    return max(30, cell["price"] // 2)
+
+
+def _get_unmortgage_cost(cell: dict) -> int:
+    return math.ceil(_get_mortgage_value(cell) * 1.1)
+
+
 def _owns_full_color_group(game: dict, owner_id: str, position: int) -> bool:
     cell = _get_board_cell(position)
 
@@ -179,9 +196,34 @@ def _owns_full_color_group(game: dict, owner_id: str, position: int) -> bool:
     )
 
 
+def _color_group_has_mortgaged_property(game: dict, position: int) -> bool:
+    cell = _get_board_cell(position)
+
+    if cell["cell_type"] != "property" or not cell.get("color_group"):
+        return False
+
+    group_positions = PROPERTY_GROUPS.get(cell["color_group"], [])
+
+    return any(game["property_mortgaged"].get(group_position, False) for group_position in group_positions)
+
+
+def _color_group_has_any_upgrade(game: dict, position: int) -> bool:
+    cell = _get_board_cell(position)
+
+    if cell["cell_type"] != "property" or not cell.get("color_group"):
+        return False
+
+    group_positions = PROPERTY_GROUPS.get(cell["color_group"], [])
+
+    return any(game["property_levels"].get(group_position, 0) > 0 for group_position in group_positions)
+
+
 def _calculate_rent(game: dict, owner_id: str, landed_position: int, roll_total: int) -> int:
     landed_cell = _get_board_cell(landed_position)
     cell_type = landed_cell["cell_type"]
+
+    if game["property_mortgaged"].get(landed_position, False):
+        return 0
 
     if cell_type == "property":
         base_rent = max(10, landed_cell["price"] // 10)
@@ -217,9 +259,11 @@ def _create_game_state(room: dict) -> dict:
         "cash": {player_id: STARTING_CASH for player_id in player_ids},
         "property_owners": {},
         "property_levels": {},
+        "property_mortgaged": {},
         "in_jail": {player_id: False for player_id in player_ids},
         "doubles_streak": {player_id: 0 for player_id in player_ids},
         "pending_purchase": None,
+        "pending_trade": None,
         "last_drawn_card": None,
         "winner_id": None,
         "last_landed_player_id": None,
@@ -416,9 +460,15 @@ def _resolve_buyable_cell(
         return True
 
     if owner_id == player_id:
-        effects.append(f"You landed on your own {landed_cell['name']}.")
+        if game["property_mortgaged"].get(landed_position, False):
+            effects.append(f"You landed on your mortgaged {landed_cell['name']}.")
+        else:
+            effects.append(f"You landed on your own {landed_cell['name']}.")
     else:
         owner_name = _get_player_name(room, owner_id)
+        if game["property_mortgaged"].get(landed_position, False):
+            effects.append(f"{landed_cell['name']} is mortgaged, so no rent is due.")
+            return False
         rent = _calculate_rent(game, owner_id, landed_position, roll_total)
         game["cash"][player_id] -= rent
         game["cash"][owner_id] += rent
@@ -448,6 +498,7 @@ def _handle_bankruptcy(room: dict, player: dict) -> bool:
 
     game["last_effects"].append(f"{player['nickname']} went bankrupt and was eliminated.")
     game["pending_purchase"] = None
+    game["pending_trade"] = None
     game["turn"]["is_doubles"] = False
     game["turn"]["turn_number"] += 1
 
@@ -505,12 +556,24 @@ def _remove_player_from_game_state(room: dict, leaving_player_id: str) -> None:
         for position, level in game.get("property_levels", {}).items()
         if position in game["property_owners"]
     }
+    game["property_mortgaged"] = {
+        position: is_mortgaged
+        for position, is_mortgaged in game.get("property_mortgaged", {}).items()
+        if position in game["property_owners"]
+    }
     game["in_jail"].pop(leaving_player_id, None)
     game["doubles_streak"].pop(leaving_player_id, None)
 
     pending_purchase = game.get("pending_purchase")
     if pending_purchase and pending_purchase["player_id"] == leaving_player_id:
         game["pending_purchase"] = None
+
+    pending_trade = game.get("pending_trade")
+    if pending_trade and leaving_player_id in {
+        pending_trade["proposer_id"],
+        pending_trade["receiver_id"],
+    }:
+        game["pending_trade"] = None
 
 
 def _build_action_response(player: dict, room: dict) -> dict:
@@ -674,6 +737,9 @@ def roll_dice(room_code: str, player_token: str) -> dict:
 
         if not turn["can_roll"]:
             raise HTTPException(status_code=400, detail="You already rolled this turn.")
+
+        if game["pending_trade"] is not None:
+            raise HTTPException(status_code=400, detail="Resolve the pending trade before rolling.")
 
         game["last_effects"] = []
         game["pending_purchase"] = None
@@ -849,6 +915,7 @@ def buy_property(room_code: str, player_token: str) -> dict:
 
         game["cash"][player_id] -= price
         game["property_owners"][position] = player_id
+        game["property_mortgaged"][position] = False
         game["pending_purchase"] = None
         game["last_effects"].append(f"Bought {cell['name']} for ${price}.")
 
@@ -909,6 +976,12 @@ def upgrade_property(room_code: str, player_token: str, position: int) -> dict:
                 detail="Resolve the pending purchase before upgrading properties.",
             )
 
+        if game["pending_trade"] is not None:
+            raise HTTPException(
+                status_code=400,
+                detail="Resolve the pending trade before upgrading properties.",
+            )
+
         if position < 0 or position >= BOARD_SIZE:
             raise HTTPException(status_code=400, detail="Invalid board position.")
 
@@ -930,6 +1003,12 @@ def upgrade_property(room_code: str, player_token: str, position: int) -> dict:
             raise HTTPException(
                 status_code=400,
                 detail="You need the full color group before upgrading this property.",
+            )
+
+        if _color_group_has_mortgaged_property(game, position):
+            raise HTTPException(
+                status_code=400,
+                detail="You cannot upgrade a color group while any property in it is mortgaged.",
             )
 
         current_level = _get_property_level(game, position)
@@ -957,6 +1036,303 @@ def upgrade_property(room_code: str, player_token: str, position: int) -> dict:
             f"Upgraded {cell['name']} to level {new_level} for ${upgrade_cost}.",
             f"Rent is now ${new_rent}.",
         ]
+        _touch_room(room)
+
+    return _build_action_response(player, room)
+
+
+def mortgage_property(room_code: str, player_token: str, position: int) -> dict:
+    normalized_room_code = _normalize_room_code(room_code)
+
+    with _rooms_lock:
+        room = _find_room_or_raise(normalized_room_code)
+
+        if room["status"] != ROOM_STATUS_IN_GAME or room.get("game") is None:
+            raise HTTPException(status_code=400, detail="Game has not started yet.")
+
+        player = _find_player_by_token(room, player_token)
+        game = room["game"]
+        turn = game["turn"]
+        player_id = player["player_id"]
+
+        if turn["current_player_id"] != player_id:
+            raise HTTPException(status_code=403, detail="It is not your turn.")
+
+        if not turn["can_roll"]:
+            raise HTTPException(
+                status_code=400,
+                detail="You can only manage mortgages before rolling this turn.",
+            )
+
+        if game["pending_purchase"] is not None:
+            raise HTTPException(
+                status_code=400,
+                detail="Resolve the pending purchase before managing mortgages.",
+            )
+
+        if game["pending_trade"] is not None:
+            raise HTTPException(
+                status_code=400,
+                detail="Resolve the pending trade before managing mortgages.",
+            )
+
+        cell = _get_board_cell(position)
+
+        if not _is_buyable_cell(cell):
+            raise HTTPException(status_code=400, detail="This cell cannot be mortgaged.")
+
+        if game["property_owners"].get(position) != player_id:
+            raise HTTPException(
+                status_code=403,
+                detail="You can only mortgage cells that you own.",
+            )
+
+        if game["property_mortgaged"].get(position, False):
+            raise HTTPException(status_code=400, detail="This cell is already mortgaged.")
+
+        if cell["cell_type"] == "property" and _color_group_has_any_upgrade(game, position):
+            raise HTTPException(
+                status_code=400,
+                detail="Sell all upgrades in this color group before mortgaging any property in it.",
+            )
+
+        mortgage_value = _get_mortgage_value(cell)
+        game["cash"][player_id] += mortgage_value
+        game["property_mortgaged"][position] = True
+        game["last_drawn_card"] = None
+        game["last_effects"] = [f"Mortgaged {cell['name']} for ${mortgage_value}."]
+        _touch_room(room)
+
+    return _build_action_response(player, room)
+
+
+def unmortgage_property(room_code: str, player_token: str, position: int) -> dict:
+    normalized_room_code = _normalize_room_code(room_code)
+
+    with _rooms_lock:
+        room = _find_room_or_raise(normalized_room_code)
+
+        if room["status"] != ROOM_STATUS_IN_GAME or room.get("game") is None:
+            raise HTTPException(status_code=400, detail="Game has not started yet.")
+
+        player = _find_player_by_token(room, player_token)
+        game = room["game"]
+        turn = game["turn"]
+        player_id = player["player_id"]
+
+        if turn["current_player_id"] != player_id:
+            raise HTTPException(status_code=403, detail="It is not your turn.")
+
+        if not turn["can_roll"]:
+            raise HTTPException(
+                status_code=400,
+                detail="You can only manage mortgages before rolling this turn.",
+            )
+
+        if game["pending_purchase"] is not None:
+            raise HTTPException(
+                status_code=400,
+                detail="Resolve the pending purchase before managing mortgages.",
+            )
+
+        if game["pending_trade"] is not None:
+            raise HTTPException(
+                status_code=400,
+                detail="Resolve the pending trade before managing mortgages.",
+            )
+
+        cell = _get_board_cell(position)
+
+        if not _is_buyable_cell(cell):
+            raise HTTPException(status_code=400, detail="This cell cannot be unmortgaged.")
+
+        if game["property_owners"].get(position) != player_id:
+            raise HTTPException(
+                status_code=403,
+                detail="You can only unmortgage cells that you own.",
+            )
+
+        if not game["property_mortgaged"].get(position, False):
+            raise HTTPException(status_code=400, detail="This cell is not mortgaged.")
+
+        unmortgage_cost = _get_unmortgage_cost(cell)
+
+        if game["cash"][player_id] < unmortgage_cost:
+            raise HTTPException(
+                status_code=400,
+                detail="You do not have enough cash to unmortgage this cell.",
+            )
+
+        game["cash"][player_id] -= unmortgage_cost
+        game["property_mortgaged"][position] = False
+        game["last_drawn_card"] = None
+        game["last_effects"] = [f"Unmortgaged {cell['name']} for ${unmortgage_cost}."]
+        _touch_room(room)
+
+    return _build_action_response(player, room)
+
+
+def propose_trade(
+    room_code: str,
+    player_token: str,
+    target_player_id: str,
+    position: int,
+    cash_amount: int,
+) -> dict:
+    normalized_room_code = _normalize_room_code(room_code)
+
+    with _rooms_lock:
+        room = _find_room_or_raise(normalized_room_code)
+
+        if room["status"] != ROOM_STATUS_IN_GAME or room.get("game") is None:
+            raise HTTPException(status_code=400, detail="Game has not started yet.")
+
+        player = _find_player_by_token(room, player_token)
+        target_player = _find_player_by_id(room, target_player_id)
+        game = room["game"]
+        turn = game["turn"]
+        player_id = player["player_id"]
+
+        if target_player["player_id"] == player_id:
+            raise HTTPException(status_code=400, detail="You cannot offer a trade to yourself.")
+
+        if turn["current_player_id"] != player_id:
+            raise HTTPException(status_code=403, detail="It is not your turn.")
+
+        if not turn["can_roll"]:
+            raise HTTPException(
+                status_code=400,
+                detail="You can only propose trades before rolling this turn.",
+            )
+
+        if game["pending_purchase"] is not None:
+            raise HTTPException(
+                status_code=400,
+                detail="Resolve the pending purchase before proposing a trade.",
+            )
+
+        if game["pending_trade"] is not None:
+            raise HTTPException(
+                status_code=400,
+                detail="Resolve the current pending trade before proposing another one.",
+            )
+
+        cell = _get_board_cell(position)
+
+        if not _is_buyable_cell(cell):
+            raise HTTPException(status_code=400, detail="Only owned buyable cells can be traded.")
+
+        if game["property_owners"].get(position) != player_id:
+            raise HTTPException(status_code=403, detail="You can only trade cells that you own.")
+
+        if game["property_mortgaged"].get(position, False):
+            raise HTTPException(status_code=400, detail="Mortgaged cells cannot be traded.")
+
+        if cell["cell_type"] == "property" and _color_group_has_any_upgrade(game, position):
+            raise HTTPException(
+                status_code=400,
+                detail="Remove all upgrades in this color group before trading a property from it.",
+            )
+
+        if game["cash"].get(target_player_id, 0) < cash_amount:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{target_player['nickname']} does not have enough cash for this offer.",
+            )
+
+        game["pending_trade"] = {
+            "proposer_id": player_id,
+            "receiver_id": target_player_id,
+            "position": position,
+            "cell_name": cell["name"],
+            "cell_type": cell["cell_type"],
+            "cash_amount": cash_amount,
+        }
+        game["last_drawn_card"] = None
+        game["last_effects"] = [
+            f"Offered {cell['name']} to {target_player['nickname']} for ${cash_amount}.",
+        ]
+        _touch_room(room)
+
+    return _build_action_response(player, room)
+
+
+def respond_to_trade(room_code: str, player_token: str, accept: bool) -> dict:
+    normalized_room_code = _normalize_room_code(room_code)
+
+    with _rooms_lock:
+        room = _find_room_or_raise(normalized_room_code)
+
+        if room["status"] != ROOM_STATUS_IN_GAME or room.get("game") is None:
+            raise HTTPException(status_code=400, detail="Game has not started yet.")
+
+        player = _find_player_by_token(room, player_token)
+        game = room["game"]
+        pending_trade = game.get("pending_trade")
+
+        if pending_trade is None:
+            raise HTTPException(status_code=400, detail="There is no pending trade to resolve.")
+
+        proposer_id = pending_trade["proposer_id"]
+        receiver_id = pending_trade["receiver_id"]
+        position = pending_trade["position"]
+        cash_amount = pending_trade["cash_amount"]
+        cell = _get_board_cell(position)
+        proposer = _find_player_by_id(room, proposer_id)
+        receiver = _find_player_by_id(room, receiver_id)
+        actor_id = player["player_id"]
+
+        if actor_id not in {proposer_id, receiver_id}:
+            raise HTTPException(status_code=403, detail="You are not part of this trade.")
+
+        if accept and actor_id != receiver_id:
+            raise HTTPException(status_code=403, detail="Only the receiving player can accept this trade.")
+
+        if not accept:
+            action_word = "cancelled" if actor_id == proposer_id else "rejected"
+            game["pending_trade"] = None
+            game["last_drawn_card"] = None
+            game["last_effects"] = [
+                f"{player['nickname']} {action_word} the trade for {cell['name']}.",
+            ]
+            _touch_room(room)
+            return _build_action_response(player, room)
+
+        if game["property_owners"].get(position) != proposer_id:
+            raise HTTPException(
+                status_code=400,
+                detail="The offered property is no longer owned by the proposing player.",
+            )
+
+        if game["property_mortgaged"].get(position, False):
+            raise HTTPException(status_code=400, detail="Mortgaged cells cannot be traded.")
+
+        if cell["cell_type"] == "property" and _color_group_has_any_upgrade(game, position):
+            raise HTTPException(
+                status_code=400,
+                detail="Remove all upgrades in this color group before trading a property from it.",
+            )
+
+        if game["cash"].get(receiver_id, 0) < cash_amount:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{receiver['nickname']} no longer has enough cash for this trade.",
+            )
+
+        game["cash"][receiver_id] -= cash_amount
+        game["cash"][proposer_id] += cash_amount
+        game["property_owners"][position] = receiver_id
+        game["pending_trade"] = None
+        game["last_drawn_card"] = None
+        game["last_effects"] = [
+            f"{receiver['nickname']} bought {cell['name']} from {proposer['nickname']} for ${cash_amount}.",
+        ]
+
+        if cell["cell_type"] == "property" and _owns_full_color_group(game, receiver_id, position):
+            game["last_effects"].append(
+                f"{receiver['nickname']} completed the {cell['color_group'].replace('_', ' ')} set."
+            )
+
         _touch_room(room)
 
     return _build_action_response(player, room)

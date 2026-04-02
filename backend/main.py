@@ -7,11 +7,15 @@ from room_store import (
     get_room,
     join_room,
     leave_room,
+    mortgage_property,
+    propose_trade,
     rejoin_room,
+    respond_to_trade,
     roll_dice,
     set_player_ready,
     skip_property_purchase,
     start_game,
+    unmortgage_property,
     upgrade_property,
 )
 from schemas import (
@@ -20,13 +24,17 @@ from schemas import (
     JoinRoomRequest,
     LeaveRoomRequest,
     LeaveRoomResponse,
+    MortgagePropertyRequest,
+    ProposeTradeRequest,
     RejoinRoomRequest,
     ReadyStateRequest,
+    RespondTradeRequest,
     RollDiceRequest,
-    StartGameRequest,
     RoomActionResponse,
     RoomResponse,
     SkipPurchaseRequest,
+    StartGameRequest,
+    UnmortgagePropertyRequest,
     UpgradePropertyRequest,
 )
 
@@ -99,3 +107,29 @@ def skip_purchase_endpoint(room_code: str, payload: SkipPurchaseRequest):
 @app.post("/rooms/{room_code}/upgrade", response_model=RoomActionResponse)
 def upgrade_property_endpoint(room_code: str, payload: UpgradePropertyRequest):
     return upgrade_property(room_code, payload.player_token, payload.position)
+
+
+@app.post("/rooms/{room_code}/mortgage", response_model=RoomActionResponse)
+def mortgage_property_endpoint(room_code: str, payload: MortgagePropertyRequest):
+    return mortgage_property(room_code, payload.player_token, payload.position)
+
+
+@app.post("/rooms/{room_code}/unmortgage", response_model=RoomActionResponse)
+def unmortgage_property_endpoint(room_code: str, payload: UnmortgagePropertyRequest):
+    return unmortgage_property(room_code, payload.player_token, payload.position)
+
+
+@app.post("/rooms/{room_code}/trade/propose", response_model=RoomActionResponse)
+def propose_trade_endpoint(room_code: str, payload: ProposeTradeRequest):
+    return propose_trade(
+        room_code,
+        payload.player_token,
+        payload.target_player_id,
+        payload.position,
+        payload.cash_amount,
+    )
+
+
+@app.post("/rooms/{room_code}/trade/respond", response_model=RoomActionResponse)
+def respond_trade_endpoint(room_code: str, payload: RespondTradeRequest):
+    return respond_to_trade(room_code, payload.player_token, payload.accept)

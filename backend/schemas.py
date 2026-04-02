@@ -44,6 +44,28 @@ class UpgradePropertyRequest(BaseModel):
     position: int = Field(ge=0, le=39)
 
 
+class MortgagePropertyRequest(BaseModel):
+    player_token: str = Field(min_length=32, max_length=32)
+    position: int = Field(ge=0, le=39)
+
+
+class UnmortgagePropertyRequest(BaseModel):
+    player_token: str = Field(min_length=32, max_length=32)
+    position: int = Field(ge=0, le=39)
+
+
+class ProposeTradeRequest(BaseModel):
+    player_token: str = Field(min_length=32, max_length=32)
+    target_player_id: str = Field(min_length=8, max_length=8)
+    position: int = Field(ge=0, le=39)
+    cash_amount: int = Field(ge=0, le=5000)
+
+
+class RespondTradeRequest(BaseModel):
+    player_token: str = Field(min_length=32, max_length=32)
+    accept: bool
+
+
 class PlayerResponse(BaseModel):
     player_id: str
     nickname: str
@@ -83,6 +105,15 @@ class DrawnCardResponse(BaseModel):
     description: str
 
 
+class PendingTradeResponse(BaseModel):
+    proposer_id: str
+    receiver_id: str
+    position: int
+    cell_name: str
+    cell_type: str
+    cash_amount: int
+
+
 class GameStateResponse(BaseModel):
     board: list[BoardCellResponse]
     turn: TurnStateResponse
@@ -90,9 +121,11 @@ class GameStateResponse(BaseModel):
     cash: dict[str, int]
     property_owners: dict[int, str]
     property_levels: dict[int, int]
+    property_mortgaged: dict[int, bool]
     in_jail: dict[str, bool]
     doubles_streak: dict[str, int]
     pending_purchase: PendingPurchaseResponse | None = None
+    pending_trade: PendingTradeResponse | None = None
     last_drawn_card: DrawnCardResponse | None = None
     winner_id: str | None = None
     last_landed_player_id: str | None = None
