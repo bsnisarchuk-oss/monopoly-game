@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from room_store import (
+    buy_property,
     create_room,
     get_room,
     join_room,
@@ -9,9 +10,12 @@ from room_store import (
     rejoin_room,
     roll_dice,
     set_player_ready,
+    skip_property_purchase,
     start_game,
+    upgrade_property,
 )
 from schemas import (
+    BuyPropertyRequest,
     CreateRoomRequest,
     JoinRoomRequest,
     LeaveRoomRequest,
@@ -22,6 +26,8 @@ from schemas import (
     StartGameRequest,
     RoomActionResponse,
     RoomResponse,
+    SkipPurchaseRequest,
+    UpgradePropertyRequest,
 )
 
 app = FastAPI()
@@ -78,3 +84,18 @@ def rejoin_room_endpoint(room_code: str, payload: RejoinRoomRequest):
 @app.post("/rooms/{room_code}/roll", response_model=RoomActionResponse)
 def roll_dice_endpoint(room_code: str, payload: RollDiceRequest):
     return roll_dice(room_code, payload.player_token)
+
+
+@app.post("/rooms/{room_code}/buy", response_model=RoomActionResponse)
+def buy_property_endpoint(room_code: str, payload: BuyPropertyRequest):
+    return buy_property(room_code, payload.player_token)
+
+
+@app.post("/rooms/{room_code}/skip-purchase", response_model=RoomActionResponse)
+def skip_purchase_endpoint(room_code: str, payload: SkipPurchaseRequest):
+    return skip_property_purchase(room_code, payload.player_token)
+
+
+@app.post("/rooms/{room_code}/upgrade", response_model=RoomActionResponse)
+def upgrade_property_endpoint(room_code: str, payload: UpgradePropertyRequest):
+    return upgrade_property(room_code, payload.player_token, payload.position)

@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 
 const API_BASE_URL = "http://127.0.0.1:8000";
 const SESSION_STORAGE_KEY = "monopoly_player_session";
+const MAX_PROPERTY_LEVEL = 4;
+const PROPERTY_RENT_MULTIPLIERS = [1, 2, 4, 7, 11];
 
 function loadStoredSession() {
   if (typeof window === "undefined") {
@@ -45,6 +47,80 @@ function formatCellType(cellType) {
     .join(" ");
 }
 
+function getBasePropertyRent(cell) {
+  if (!cell?.price || cell.cell_type !== "property") {
+    return null;
+  }
+
+  return Math.max(10, Math.floor(cell.price / 10));
+}
+
+function getUpgradeCost(cell) {
+  if (!cell?.price || cell.cell_type !== "property") {
+    return null;
+  }
+
+  return Math.max(50, Math.floor(cell.price / 2));
+}
+
+function getRentHint(cell, level = 0) {
+  if (!cell?.price) {
+    return null;
+  }
+
+  if (cell.cell_type === "property") {
+    const baseRent = getBasePropertyRent(cell);
+    const safeLevel = Math.max(0, Math.min(level, MAX_PROPERTY_LEVEL));
+    return `Rent: $${baseRent * PROPERTY_RENT_MULTIPLIERS[safeLevel]}`;
+  }
+
+  if (cell.cell_type === "railroad") {
+    return "Rent: $25 x owned railroads";
+  }
+
+  if (cell.cell_type === "utility") {
+    return "Rent: dice x4 or x10";
+  }
+
+  return null;
+}
+
+function getBoardPlacement(index) {
+  if (index >= 0 && index <= 10) {
+    return { row: 11, column: 11 - index };
+  }
+
+  if (index >= 11 && index <= 20) {
+    return { row: 11 - (index - 10), column: 1 };
+  }
+
+  if (index >= 21 && index <= 30) {
+    return { row: 1, column: index - 19 };
+  }
+
+  return { row: index - 29, column: 11 };
+}
+
+function getBoardSide(index) {
+  if (index === 0 || index === 10 || index === 20 || index === 30) {
+    return "corner";
+  }
+
+  if (index > 0 && index < 10) {
+    return "bottom";
+  }
+
+  if (index > 10 && index < 20) {
+    return "left";
+  }
+
+  if (index > 20 && index < 30) {
+    return "top";
+  }
+
+  return "right";
+}
+
 function App() {
   const [message, setMessage] = useState("Loading...");
   const [nickname, setNickname] = useState("");
@@ -59,11 +135,16 @@ function App() {
   const isGameOpen = currentRoom?.status === "in_game";
   const isFinished = currentRoom?.status === "finished";
   const boardCells = currentRoom?.game?.board ?? [];
+  const propertyOwners = currentRoom?.game?.property_owners ?? {};
+  const propertyLevels = currentRoom?.game?.property_levels ?? {};
+  const pendingPurchase = currentRoom?.game?.pending_purchase ?? null;
+  const lastDrawnCard = currentRoom?.game?.last_drawn_card ?? null;
   const winnerId = currentRoom?.game?.winner_id ?? null;
   const winnerPlayer =
     currentRoom?.players.find((player) => player.player_id === winnerId) ?? null;
   const currentPlayer =
     currentRoom?.players.find((player) => player.player_id === playerId) ?? null;
+  const isEliminated = Boolean(currentRoom && isGameOpen && playerId && !currentPlayer);
   const isHost = currentPlayer?.is_host ?? false;
   const canStartGame =
     isHost &&
@@ -77,6 +158,10 @@ function App() {
     isGameOpen &&
     currentTurnPlayerId === playerId &&
     (currentRoom?.game?.turn.can_roll ?? false);
+  const canResolvePurchase =
+    isGameOpen &&
+    pendingPurchase?.player_id === playerId &&
+    Boolean(playerToken);
   const isCurrentPlayerInJail =
     currentRoom?.game?.in_jail?.[playerId] ?? false;
   const currentPlayerDoublesStreak =
@@ -88,10 +173,62 @@ function App() {
     currentRoom?.players.find((player) => player.player_id === lastLandedPlayerId) ?? null;
   const lastLandedCell =
     boardCells.find((cell) => cell.index === lastLandedPosition) ?? null;
+  const lastLandedCellLevel = lastLandedCell ? propertyLevels[lastLandedCell.index] ?? 0 : 0;
+  const lastLandedCellOwner = lastLandedCell
+    ? getPlayerById(propertyOwners[lastLandedCell.index])
+    : null;
+  const pendingPurchaseCell =
+    boardCells.find((cell) => cell.index === pendingPurchase?.position) ?? null;
+  const pendingPurchasePlayer =
+    currentRoom?.players.find((player) => player.player_id === pendingPurchase?.player_id) ??
+    null;
 
   function getCellByPosition(position) {
     return boardCells.find((cell) => cell.index === position) ?? null;
   }
+
+  function getPlayerById(targetPlayerId) {
+    return currentRoom?.players.find((player) => player.player_id === targetPlayerId) ?? null;
+  }
+
+  function ownsFullColorSet(ownerId, colorGroup) {
+    if (!ownerId || !colorGroup) {
+      return false;
+    }
+
+    const groupCells = boardCells.filter(
+      (cell) => cell.cell_type === "property" && cell.color_group === colorGroup,
+    );
+
+    return groupCells.length > 0 &&
+      groupCells.every((cell) => propertyOwners[cell.index] === ownerId);
+  }
+
+  const upgradeableProperties =
+    currentPlayer == null
+      ? []
+      : boardCells.filter((cell) => {
+          if (cell.cell_type !== "property" || !cell.color_group) {
+            return false;
+          }
+
+          if (propertyOwners[cell.index] !== currentPlayer.player_id) {
+            return false;
+          }
+
+          if (!ownsFullColorSet(currentPlayer.player_id, cell.color_group)) {
+            return false;
+          }
+
+          return (propertyLevels[cell.index] ?? 0) < MAX_PROPERTY_LEVEL;
+        });
+
+  const canUpgradeProperties =
+    isGameOpen &&
+    currentTurnPlayerId === playerId &&
+    (currentRoom?.game?.turn.can_roll ?? false) &&
+    !pendingPurchase &&
+    Boolean(playerToken);
 
   useEffect(() => {
     fetch(`${API_BASE_URL}/`)
@@ -435,6 +572,15 @@ function App() {
   }
 
   async function handleLeaveRoom() {
+    if (currentRoom && !currentPlayer) {
+      clearStoredSession();
+      setPlayerId("");
+      setPlayerToken("");
+      setCurrentRoom(null);
+      setStatus("You left the match view.");
+      return;
+    }
+
     if (!currentRoom || !playerToken) {
       setStatus("You are not currently in a room.");
       return;
@@ -468,6 +614,157 @@ function App() {
       setPlayerToken("");
       setCurrentRoom(null);
       setStatus(data.room_deleted ? "You left. The room was deleted." : "You left the room.");
+    } catch (error) {
+      setStatus(error.message);
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
+  async function handleBuyProperty() {
+    if (!currentRoom || !playerToken || !pendingPurchaseCell) {
+      setStatus("There is no property waiting for your decision.");
+      return;
+    }
+
+    setIsSubmitting(true);
+    setStatus(`Buying ${pendingPurchaseCell.name}...`);
+
+    try {
+      const response = await fetch(
+        `${API_BASE_URL}/rooms/${currentRoom.room_code}/buy`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            player_token: playerToken,
+          }),
+        },
+      );
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.detail || "Property purchase failed.");
+      }
+
+      setPlayerId(data.player_id);
+      setPlayerToken(data.player_token);
+      setCurrentRoom(data.room);
+      saveStoredSession({
+        player_id: data.player_id,
+        player_token: data.player_token,
+        room_code: data.room.room_code,
+        nickname: currentPlayer?.nickname ?? nickname.trim(),
+      });
+      setStatus(`You bought ${pendingPurchaseCell.name} for $${pendingPurchase.price}.`);
+    } catch (error) {
+      setStatus(error.message);
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
+  async function handleSkipPurchase() {
+    if (!currentRoom || !playerToken || !pendingPurchaseCell) {
+      setStatus("There is no property waiting for your decision.");
+      return;
+    }
+
+    setIsSubmitting(true);
+    setStatus(`Passing on ${pendingPurchaseCell.name}...`);
+
+    try {
+      const response = await fetch(
+        `${API_BASE_URL}/rooms/${currentRoom.room_code}/skip-purchase`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            player_token: playerToken,
+          }),
+        },
+      );
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.detail || "Skip purchase failed.");
+      }
+
+      setPlayerId(data.player_id);
+      setPlayerToken(data.player_token);
+      setCurrentRoom(data.room);
+      saveStoredSession({
+        player_id: data.player_id,
+        player_token: data.player_token,
+        room_code: data.room.room_code,
+        nickname: currentPlayer?.nickname ?? nickname.trim(),
+      });
+      setStatus(`You passed on buying ${pendingPurchaseCell.name}.`);
+    } catch (error) {
+      setStatus(error.message);
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
+  async function handleUpgradeProperty(position) {
+    if (!currentRoom || !playerToken) {
+      setStatus("Join the active game before upgrading properties.");
+      return;
+    }
+
+    const propertyCell = boardCells.find((cell) => cell.index === position) ?? null;
+    const upgradeCost = getUpgradeCost(propertyCell);
+
+    if (!propertyCell || upgradeCost == null) {
+      setStatus("That property cannot be upgraded.");
+      return;
+    }
+
+    setIsSubmitting(true);
+    setStatus(`Upgrading ${propertyCell.name}...`);
+
+    try {
+      const response = await fetch(
+        `${API_BASE_URL}/rooms/${currentRoom.room_code}/upgrade`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            player_token: playerToken,
+            position,
+          }),
+        },
+      );
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.detail || "Property upgrade failed.");
+      }
+
+      setPlayerId(data.player_id);
+      setPlayerToken(data.player_token);
+      setCurrentRoom(data.room);
+      saveStoredSession({
+        player_id: data.player_id,
+        player_token: data.player_token,
+        room_code: data.room.room_code,
+        nickname: currentPlayer?.nickname ?? nickname.trim(),
+      });
+
+      const upgradedLevel = (data.room.game?.property_levels?.[position] ?? 0);
+      setStatus(
+        `You upgraded ${propertyCell.name} to level ${upgradedLevel} for $${upgradeCost}.`,
+      );
     } catch (error) {
       setStatus(error.message);
     } finally {
@@ -629,6 +926,9 @@ function App() {
                   {winnerPlayer?.player_id === playerId ? " (you)" : ""}
                 </strong>
               </p>
+              {!currentPlayer && (
+                <p>You were eliminated before the end of the match.</p>
+              )}
             </section>
 
             <div className="room-actions">
@@ -644,7 +944,46 @@ function App() {
           </section>
         )}
 
-        {currentRoom && isGameOpen && (
+        {currentRoom && isEliminated && (
+          <section className="game-card">
+            <div className="room-card-header">
+              <div>
+                <h2>Eliminated</h2>
+                <p>
+                  Room code: <strong>{currentRoom.room_code}</strong>
+                </p>
+              </div>
+              <p className="player-id">Your player id: {playerId}</p>
+            </div>
+
+            <section className="game-summary">
+              <p>You went bankrupt and can no longer take turns in this match.</p>
+              <p>
+                Current turn: <strong>{currentTurnPlayer?.nickname ?? "Unknown player"}</strong>
+              </p>
+              {lastEffects.length > 0 && (
+                <div className="effect-list">
+                  {lastEffects.map((effect) => (
+                    <p key={effect}>{effect}</p>
+                  ))}
+                </div>
+              )}
+            </section>
+
+            <div className="room-actions">
+              <button
+                type="button"
+                className="leave-button"
+                onClick={handleLeaveRoom}
+                disabled={isSubmitting}
+              >
+                Exit match view
+              </button>
+            </div>
+          </section>
+        )}
+
+        {currentRoom && isGameOpen && currentPlayer && (
           <section className="game-card">
             <div className="room-card-header">
               <div>
@@ -659,69 +998,245 @@ function App() {
               <p className="player-id">Your player id: {playerId}</p>
             </div>
 
-            <section className="game-summary">
-              <p>
-                Current turn: <strong>{currentTurnPlayer?.nickname ?? "Unknown player"}</strong>
-              </p>
-              <p>
-                Last roll:{" "}
-                <strong>
-                  {currentRoom.game?.turn.last_roll
-                    ? currentRoom.game.turn.last_roll.join(" + ")
-                    : "No roll yet"}
-                </strong>
-              </p>
-              <p>
-                Landed cell:{" "}
-                <strong>
-                  {lastLandedCell
-                    ? `${lastLandedPlayer?.nickname ?? "Player"} landed on ${lastLandedCell.name}`
-                    : "No landing yet"}
-                </strong>
-              </p>
-              {lastLandedCell && (
-                <p>
-                  Cell type: <strong>{formatCellType(lastLandedCell.cell_type)}</strong> -{" "}
-                  {lastLandedCell.description}
-                </p>
-              )}
-              {lastEffects.length > 0 && (
-                <div className="effect-list">
-                  {lastEffects.map((effect) => (
-                    <p key={effect}>{effect}</p>
-                  ))}
-                </div>
-              )}
-            </section>
+            <section className="monopoly-board-shell">
+              <div className="monopoly-board">
+                <section className="board-center">
+                  <section className="game-summary board-center-section">
+                    <p>
+                      Current turn: <strong>{currentTurnPlayer?.nickname ?? "Unknown player"}</strong>
+                    </p>
+                    <p>
+                      Last roll:{" "}
+                      <strong>
+                        {currentRoom.game?.turn.last_roll
+                          ? currentRoom.game.turn.last_roll.join(" + ")
+                          : "No roll yet"}
+                      </strong>
+                    </p>
+                    <p>
+                      Landed cell:{" "}
+                      <strong>
+                        {lastLandedCell
+                          ? `${lastLandedPlayer?.nickname ?? "Player"} landed on ${lastLandedCell.name}`
+                          : "No landing yet"}
+                      </strong>
+                    </p>
+                    {lastLandedCell && (
+                      <p>
+                        Cell type: <strong>{formatCellType(lastLandedCell.cell_type)}</strong> -{" "}
+                        {lastLandedCell.description}
+                      </p>
+                    )}
+                    {lastLandedCell?.price && (
+                      <p>
+                        Price: <strong>${lastLandedCell.price}</strong>
+                        {getRentHint(lastLandedCell, lastLandedCellLevel) && (
+                          <> &middot; {getRentHint(lastLandedCell, lastLandedCellLevel)}</>
+                        )}
+                      </p>
+                    )}
+                    {lastLandedCell?.cell_type === "property" && (
+                      <p>
+                        Upgrade level: <strong>{lastLandedCellLevel}/{MAX_PROPERTY_LEVEL}</strong>
+                      </p>
+                    )}
+                    {lastLandedCell && !lastLandedCell.price && typeof lastLandedCell.amount === "number" && (
+                      <p>
+                        Amount:{" "}
+                        <strong>
+                          {lastLandedCell.cell_type === "tax"
+                            ? `-$${lastLandedCell.amount}`
+                            : `+$${lastLandedCell.amount}`}
+                        </strong>
+                      </p>
+                    )}
+                    {lastLandedCellOwner && (
+                      <p>
+                        Owner: <strong>{lastLandedCellOwner.nickname}</strong>
+                      </p>
+                    )}
+                    {lastEffects.length > 0 && (
+                      <div className="effect-list">
+                        {lastEffects.map((effect, i) => (
+                          <p key={i}>{effect}</p>
+                        ))}
+                      </div>
+                    )}
+                  </section>
 
-            <div className="room-actions">
-              {isCurrentPlayerInJail && (
-                <p className="jail-notice">
-                  You are in jail. Roll doubles to escape.
-                </p>
-              )}
-              {!isCurrentPlayerInJail && currentPlayerDoublesStreak > 0 && (
-                <p className="doubles-notice">
-                  Doubles streak: {currentPlayerDoublesStreak}/3 - one more and you go to jail!
-                </p>
-              )}
-              <button
-                type="button"
-                className="start-button"
-                onClick={handleRollDice}
-                disabled={isSubmitting || !canRollDice}
-              >
-                {isCurrentPlayerInJail ? "Roll dice (jail)" : "Roll dice"}
-              </button>
-              <button
-                type="button"
-                className="leave-button"
-                onClick={handleLeaveRoom}
-                disabled={isSubmitting}
-              >
-                Leave room
-              </button>
-            </div>
+                  {lastDrawnCard && (
+                    <section className="drawn-card board-center-section">
+                      <h3>{lastDrawnCard.deck} card</h3>
+                      <p>
+                        <strong>{lastDrawnCard.title}</strong>
+                      </p>
+                      <p>{lastDrawnCard.description}</p>
+                    </section>
+                  )}
+
+                  {pendingPurchaseCell && (
+                    <section className="purchase-card board-center-section">
+                      <h3>Pending purchase</h3>
+                      <p>
+                        {pendingPurchasePlayer?.nickname ?? "A player"} can buy{" "}
+                        <strong>{pendingPurchaseCell.name}</strong> for{" "}
+                        <strong>${pendingPurchase?.price}</strong>.
+                      </p>
+                      <p>
+                        Type: <strong>{formatCellType(pendingPurchaseCell.cell_type)}</strong>
+                      </p>
+                    </section>
+                  )}
+
+                  {upgradeableProperties.length > 0 && (
+                    <section className="upgrade-card board-center-section">
+                      <h3>Property upgrades</h3>
+                      <p>
+                        Build before rolling when you control the full color group. This is our
+                        simplified houses system for the MVP.
+                      </p>
+                      <div className="upgrade-list">
+                        {upgradeableProperties.map((cell) => {
+                          const level = propertyLevels[cell.index] ?? 0;
+                          const nextLevel = level + 1;
+                          const upgradeCost = getUpgradeCost(cell);
+                          const currentRent = getRentHint(cell, level);
+                          const nextRent = getRentHint(cell, nextLevel);
+
+                          return (
+                            <article key={cell.index} className="upgrade-option">
+                              <div>
+                                <h4>{cell.name}</h4>
+                                <p>
+                                  Group:{" "}
+                                  <strong>{formatCellType(cell.color_group ?? "property")}</strong>
+                                </p>
+                                <p>
+                                  Level <strong>{level}</strong> {"->"} <strong>{nextLevel}</strong>
+                                </p>
+                                <p>
+                                  {currentRent} {"->"} <strong>{nextRent}</strong>
+                                </p>
+                                <p>
+                                  Cost: <strong>${upgradeCost}</strong>
+                                </p>
+                              </div>
+                              <button
+                                type="button"
+                                className="upgrade-button"
+                                onClick={() => handleUpgradeProperty(cell.index)}
+                                disabled={isSubmitting || !canUpgradeProperties}
+                              >
+                                Upgrade
+                              </button>
+                            </article>
+                          );
+                        })}
+                      </div>
+                      {!canUpgradeProperties && (
+                        <p className="upgrade-note">
+                          Upgrades are only available at the start of your own turn, before you roll.
+                        </p>
+                      )}
+                    </section>
+                  )}
+
+                  <div className="room-actions board-center-actions">
+                    {pendingPurchaseCell && !canResolvePurchase && (
+                      <p className="purchase-note">
+                        Waiting for {pendingPurchasePlayer?.nickname ?? "the active player"} to buy or
+                        pass on {pendingPurchaseCell.name}.
+                      </p>
+                    )}
+                    {canResolvePurchase && (
+                      <p className="purchase-note">
+                        You can buy {pendingPurchaseCell.name} for ${pendingPurchase?.price} or pass.
+                      </p>
+                    )}
+                    {isCurrentPlayerInJail && (
+                      <p className="jail-notice">You are in jail. Roll doubles to escape.</p>
+                    )}
+                    {!isCurrentPlayerInJail && currentPlayerDoublesStreak > 0 && (
+                      <p className="doubles-notice">
+                        Doubles streak: {currentPlayerDoublesStreak}/3 - one more and you go to jail!
+                      </p>
+                    )}
+                    <button
+                      type="button"
+                      className="start-button"
+                      onClick={handleRollDice}
+                      disabled={isSubmitting || !canRollDice}
+                    >
+                      {isCurrentPlayerInJail ? "Roll dice (jail)" : "Roll dice"}
+                    </button>
+                    {canResolvePurchase && (
+                      <>
+                        <button
+                          type="button"
+                          className="buy-button"
+                          onClick={handleBuyProperty}
+                          disabled={isSubmitting}
+                        >
+                          Buy property
+                        </button>
+                        <button
+                          type="button"
+                          className="pass-button"
+                          onClick={handleSkipPurchase}
+                          disabled={isSubmitting}
+                        >
+                          Pass on purchase
+                        </button>
+                      </>
+                    )}
+                    <button
+                      type="button"
+                      className="leave-button"
+                      onClick={handleLeaveRoom}
+                      disabled={isSubmitting}
+                    >
+                      Leave room
+                    </button>
+                  </div>
+                </section>
+
+                {boardCells.map((cell) => {
+                  const occupants = currentRoom.players.filter(
+                    (player) => (currentRoom.game?.positions[player.player_id] ?? 0) === cell.index,
+                  );
+                  const { row, column } = getBoardPlacement(cell.index);
+                  const boardSide = getBoardSide(cell.index);
+                  const groupClass = cell.color_group ? `cell-group-${cell.color_group}` : "";
+
+                  return (
+                    <article
+                      key={cell.index}
+                      className={`cell-tile cell-side-${boardSide} ${groupClass} ${
+                        lastLandedCell?.index === cell.index ? "is-landed" : ""
+                      }`}
+                      style={{ gridRow: row, gridColumn: column }}
+                    >
+                      <span className={`cell-band cell-band-${cell.cell_type}`} aria-hidden="true" />
+                      <h4>{cell.name}</h4>
+                      {cell.cell_type === "property" && (propertyLevels[cell.index] ?? 0) > 0 && (
+                        <p className="cell-level-badge">
+                          Level {propertyLevels[cell.index]}
+                        </p>
+                      )}
+                      {occupants.length > 0 && (
+                        <div className="cell-occupants">
+                          {occupants.map((player) => (
+                            <span key={player.player_id} className="occupant-chip">
+                              {player.nickname}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </article>
+                  );
+                })}
+              </div>
+            </section>
 
             <section className="board-grid">
               {currentRoom.players.map((player) => (
@@ -741,8 +1256,47 @@ function App() {
                         ?.name ?? "Unknown"}
                     </strong>
                   </p>
+                  {getCellByPosition(currentRoom.game?.positions[player.player_id] ?? 0)
+                    ?.cell_type === "property" && (
+                    <p>
+                      Upgrade level:{" "}
+                      <strong>
+                        {
+                          propertyLevels[
+                            currentRoom.game?.positions[player.player_id] ?? 0
+                          ] ?? 0
+                        }
+                      </strong>
+                    </p>
+                  )}
+                  {getRentHint(
+                    getCellByPosition(currentRoom.game?.positions[player.player_id] ?? 0),
+                    propertyLevels[currentRoom.game?.positions[player.player_id] ?? 0] ?? 0,
+                  ) && (
+                    <p>
+                      Rent rule:{" "}
+                      <strong>
+                        {
+                          getRentHint(
+                            getCellByPosition(currentRoom.game?.positions[player.player_id] ?? 0),
+                            propertyLevels[currentRoom.game?.positions[player.player_id] ?? 0] ?? 0,
+                          )
+                        }
+                      </strong>
+                    </p>
+                  )}
                   <p>
                     Cash: <strong>${currentRoom.game?.cash[player.player_id] ?? 0}</strong>
+                  </p>
+                  <p>
+                    Owned cells:{" "}
+                    <strong>
+                      {
+                        Object.values(propertyOwners).filter(
+                          (ownerPlayerId) => ownerPlayerId === player.player_id,
+                        ).length
+                      }
+                    </strong>
                   </p>
                   <p>
                     Status:{" "}
@@ -760,40 +1314,6 @@ function App() {
                   </p>
                 </article>
               ))}
-            </section>
-
-            <section className="track-card">
-              <div className="track-card-header">
-                <h3>Board Track</h3>
-                <p>All 40 cells are now loaded from server-side board data.</p>
-              </div>
-              <div className="cell-grid">
-                {boardCells.map((cell) => {
-                  const occupants = currentRoom.players.filter(
-                    (player) =>
-                      (currentRoom.game?.positions[player.player_id] ?? 0) === cell.index,
-                  );
-
-                  return (
-                    <article
-                      key={cell.index}
-                      className={`cell-tile ${
-                        lastLandedCell?.index === cell.index ? "is-landed" : ""
-                      }`}
-                    >
-                      <span className="cell-index">#{cell.index}</span>
-                      <h4>{cell.name}</h4>
-                      <p className="cell-type">{formatCellType(cell.cell_type)}</p>
-                      <p className="cell-description">{cell.description}</p>
-                      {occupants.length > 0 && (
-                        <p className="cell-occupants">
-                          On cell: {occupants.map((player) => player.nickname).join(", ")}
-                        </p>
-                      )}
-                    </article>
-                  );
-                })}
-              </div>
             </section>
           </section>
         )}

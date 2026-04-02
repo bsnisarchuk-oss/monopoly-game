@@ -5,6 +5,7 @@ import time
 import uuid
 
 from board_data import BOARD_CELLS, get_board_cells
+from card_data import draw_card
 from fastapi import HTTPException
 
 MAX_PLAYERS = 4
@@ -19,9 +20,19 @@ STARTING_CASH = 1500
 BOARD_SIZE = len(BOARD_CELLS)
 JAIL_POSITION = 10
 MAX_DOUBLES_STREAK = 3
+BUYABLE_CELL_TYPES = {"property", "railroad", "utility"}
+MAX_PROPERTY_LEVEL = 4
+PROPERTY_RENT_MULTIPLIERS = [1, 2, 4, 7, 11]
 
 rooms: dict[str, dict] = {}
 _rooms_lock = threading.Lock()
+PROPERTY_GROUPS: dict[str, list[int]] = {}
+
+for board_cell in BOARD_CELLS:
+    if board_cell["cell_type"] != "property" or not board_cell.get("color_group"):
+        continue
+
+    PROPERTY_GROUPS.setdefault(board_cell["color_group"], []).append(board_cell["index"])
 
 
 def _normalize_nickname(nickname: str) -> str:
@@ -120,6 +131,75 @@ def _get_board_cell(position: int) -> dict:
     return BOARD_CELLS[position]
 
 
+def _is_buyable_cell(cell: dict) -> bool:
+    return cell["cell_type"] in BUYABLE_CELL_TYPES and cell.get("price") is not None
+
+
+def _get_next_player_id(room: dict, player_id: str) -> str:
+    player_ids = [member["player_id"] for member in room["players"]]
+    next_index = (player_ids.index(player_id) + 1) % len(player_ids)
+    return player_ids[next_index]
+
+
+def _get_player_name(room: dict, player_id: str) -> str:
+    for player in room["players"]:
+        if player["player_id"] == player_id:
+            return player["nickname"]
+
+    return "Unknown player"
+
+
+def _count_owned_cells_by_type(game: dict, owner_id: str, cell_type: str) -> int:
+    return sum(
+        1
+        for position, current_owner_id in game["property_owners"].items()
+        if current_owner_id == owner_id and _get_board_cell(position)["cell_type"] == cell_type
+    )
+
+
+def _get_property_level(game: dict, position: int) -> int:
+    return game["property_levels"].get(position, 0)
+
+
+def _get_upgrade_cost(cell: dict) -> int:
+    return max(50, cell["price"] // 2)
+
+
+def _owns_full_color_group(game: dict, owner_id: str, position: int) -> bool:
+    cell = _get_board_cell(position)
+
+    if cell["cell_type"] != "property" or not cell.get("color_group"):
+        return False
+
+    group_positions = PROPERTY_GROUPS.get(cell["color_group"], [])
+
+    return bool(group_positions) and all(
+        game["property_owners"].get(group_position) == owner_id
+        for group_position in group_positions
+    )
+
+
+def _calculate_rent(game: dict, owner_id: str, landed_position: int, roll_total: int) -> int:
+    landed_cell = _get_board_cell(landed_position)
+    cell_type = landed_cell["cell_type"]
+
+    if cell_type == "property":
+        base_rent = max(10, landed_cell["price"] // 10)
+        level = min(_get_property_level(game, landed_position), MAX_PROPERTY_LEVEL)
+        return base_rent * PROPERTY_RENT_MULTIPLIERS[level]
+
+    if cell_type == "railroad":
+        owned_railroads = _count_owned_cells_by_type(game, owner_id, "railroad")
+        return 25 * max(1, owned_railroads)
+
+    if cell_type == "utility":
+        owned_utilities = _count_owned_cells_by_type(game, owner_id, "utility")
+        multiplier = 10 if owned_utilities >= 2 else 4
+        return roll_total * multiplier
+
+    return 0
+
+
 def _create_game_state(room: dict) -> dict:
     player_ids = [player["player_id"] for player in room["players"]]
     first_player_id = random.choice(player_ids)
@@ -135,8 +215,12 @@ def _create_game_state(room: dict) -> dict:
         },
         "positions": {player_id: 0 for player_id in player_ids},
         "cash": {player_id: STARTING_CASH for player_id in player_ids},
+        "property_owners": {},
+        "property_levels": {},
         "in_jail": {player_id: False for player_id in player_ids},
         "doubles_streak": {player_id: 0 for player_id in player_ids},
+        "pending_purchase": None,
+        "last_drawn_card": None,
         "winner_id": None,
         "last_landed_player_id": None,
         "last_landed_position": None,
@@ -163,12 +247,104 @@ def _apply_start_bonus(game: dict, player_id: str, effects: list[str]) -> None:
         effects.append(f"Collected ${start_amount} from Start.")
 
 
+def _resolve_card_destination(
+    room: dict,
+    player_id: str,
+    target_position: int,
+    roll_total: int,
+    effects: list[str],
+) -> tuple[bool, bool]:
+    game = room["game"]
+    target_cell = _get_board_cell(target_position)
+
+    if target_cell["cell_type"] == "go_to_jail":
+        game["in_jail"][player_id] = True
+        game["doubles_streak"][player_id] = 0
+        game["positions"][player_id] = JAIL_POSITION
+        effects.append("The card sent you to Go To Jail, then on to Jail.")
+        return True, False
+
+    game["positions"][player_id] = target_position
+
+    if target_cell["cell_type"] == "tax":
+        tax_amount = target_cell.get("amount", 0)
+        if tax_amount:
+            game["cash"][player_id] -= tax_amount
+            effects.append(f"Paid ${tax_amount} for {target_cell['name']}.")
+
+    pending_purchase_created = False
+    if _is_buyable_cell(target_cell):
+        pending_purchase_created = _resolve_buyable_cell(
+            room,
+            player_id,
+            target_position,
+            roll_total,
+            effects,
+        )
+
+    return False, pending_purchase_created
+
+
+def _draw_and_resolve_card(
+    room: dict,
+    player_id: str,
+    cell_type: str,
+    current_position: int,
+    roll_total: int,
+    effects: list[str],
+) -> tuple[bool, bool]:
+    game = room["game"]
+    card = draw_card(cell_type)
+    game["last_drawn_card"] = {
+        "deck": card["deck"],
+        "title": card["title"],
+        "description": card["description"],
+    }
+    effects.append(f"{card['deck']} card: {card['title']}.")
+    effect_type = card["effect_type"]
+
+    if effect_type == "cash":
+        amount = card["amount"]
+        game["cash"][player_id] += amount
+        if amount >= 0:
+            effects.append(f"Collected ${amount} from the card.")
+        else:
+            effects.append(f"Paid ${abs(amount)} because of the card.")
+        return False, False
+
+    if effect_type == "go_to_jail":
+        game["in_jail"][player_id] = True
+        game["doubles_streak"][player_id] = 0
+        game["positions"][player_id] = JAIL_POSITION
+        effects.append("Moved directly to Jail because of the card.")
+        return True, False
+
+    if effect_type == "move_to":
+        target_position = card["position"]
+
+        if card.get("collect_start") or target_position < current_position:
+            _apply_start_bonus(game, player_id, effects)
+
+        target_cell = _get_board_cell(target_position)
+        effects.append(f"Moved to {target_cell['name']} because of the card.")
+        return _resolve_card_destination(
+            room,
+            player_id,
+            target_position,
+            roll_total,
+            effects,
+        )
+
+    return False, False
+
+
 def _resolve_landing(
-    game: dict,
+    room: dict,
     player_id: str,
     current_position: int,
     total: int,
-) -> tuple[int, bool, list[str]]:
+) -> tuple[int, bool, bool, list[str]]:
+    game = room["game"]
     effects: list[str] = []
     landed_position = (current_position + total) % BOARD_SIZE
     passed_start = current_position + total >= BOARD_SIZE
@@ -183,7 +359,7 @@ def _resolve_landing(
         game["doubles_streak"][player_id] = 0
         game["positions"][player_id] = JAIL_POSITION
         effects.append("Landed on Go To Jail and moved directly to Jail.")
-        return landed_position, True, effects
+        return landed_position, True, False, effects
 
     game["positions"][player_id] = landed_position
 
@@ -193,7 +369,107 @@ def _resolve_landing(
             game["cash"][player_id] -= tax_amount
             effects.append(f"Paid ${tax_amount} for {landed_cell['name']}.")
 
-    return landed_position, False, effects
+    if landed_cell["cell_type"] in {"chance", "community"}:
+        sent_to_jail, pending_purchase_created = _draw_and_resolve_card(
+            room,
+            player_id,
+            landed_cell["cell_type"],
+            landed_position,
+            total,
+            effects,
+        )
+        return landed_position, sent_to_jail, pending_purchase_created, effects
+
+    return landed_position, False, False, effects
+
+
+def _resolve_buyable_cell(
+    room: dict,
+    player_id: str,
+    landed_position: int,
+    roll_total: int,
+    effects: list[str],
+) -> bool:
+    game = room["game"]
+    landed_cell = _get_board_cell(landed_position)
+
+    if not _is_buyable_cell(landed_cell):
+        return False
+
+    owner_id = game["property_owners"].get(landed_position)
+
+    if owner_id is None:
+        price = landed_cell["price"]
+
+        if game["cash"][player_id] < price:
+            effects.append(f"You cannot afford {landed_cell['name']} for ${price}.")
+            return False
+
+        game["pending_purchase"] = {
+            "player_id": player_id,
+            "position": landed_position,
+            "price": price,
+            "cell_name": landed_cell["name"],
+            "cell_type": landed_cell["cell_type"],
+        }
+        effects.append(f"You can buy {landed_cell['name']} for ${price}.")
+        return True
+
+    if owner_id == player_id:
+        effects.append(f"You landed on your own {landed_cell['name']}.")
+    else:
+        owner_name = _get_player_name(room, owner_id)
+        rent = _calculate_rent(game, owner_id, landed_position, roll_total)
+        game["cash"][player_id] -= rent
+        game["cash"][owner_id] += rent
+        effects.append(f"Paid ${rent} rent to {owner_name} for {landed_cell['name']}.")
+
+    return False
+
+
+def _resume_turn_after_purchase(room: dict, player_id: str) -> None:
+    game = room["game"]
+    turn = game["turn"]
+
+    if turn["is_doubles"] and not game["in_jail"].get(player_id, False):
+        turn["current_player_id"] = player_id
+    else:
+        turn["current_player_id"] = _get_next_player_id(room, player_id)
+
+    turn["can_roll"] = True
+
+
+def _handle_bankruptcy(room: dict, player: dict) -> bool:
+    game = room["game"]
+    player_id = player["player_id"]
+
+    if game["cash"].get(player_id, 0) >= 0:
+        return False
+
+    game["last_effects"].append(f"{player['nickname']} went bankrupt and was eliminated.")
+    game["pending_purchase"] = None
+    game["turn"]["is_doubles"] = False
+    game["turn"]["turn_number"] += 1
+
+    room["players"] = [
+        existing_player
+        for existing_player in room["players"]
+        if existing_player["player_id"] != player_id
+    ]
+
+    _remove_player_from_game_state(room, player_id)
+
+    if room["players"] and player["is_host"]:
+        room["players"][0]["is_host"] = True
+
+    if len(room["players"]) == 1:
+        winner = room["players"][0]
+        room["status"] = ROOM_STATUS_FINISHED
+        game["winner_id"] = winner["player_id"]
+        game["last_effects"].append(f"{winner['nickname']} wins the game.")
+
+    _touch_room(room)
+    return True
 
 
 def _remove_player_from_game_state(room: dict, leaving_player_id: str) -> None:
@@ -219,8 +495,22 @@ def _remove_player_from_game_state(room: dict, leaving_player_id: str) -> None:
 
     game["positions"].pop(leaving_player_id, None)
     game["cash"].pop(leaving_player_id, None)
+    game["property_owners"] = {
+        position: owner_id
+        for position, owner_id in game["property_owners"].items()
+        if owner_id != leaving_player_id
+    }
+    game["property_levels"] = {
+        position: level
+        for position, level in game.get("property_levels", {}).items()
+        if position in game["property_owners"]
+    }
     game["in_jail"].pop(leaving_player_id, None)
     game["doubles_streak"].pop(leaving_player_id, None)
+
+    pending_purchase = game.get("pending_purchase")
+    if pending_purchase and pending_purchase["player_id"] == leaving_player_id:
+        game["pending_purchase"] = None
 
 
 def _build_action_response(player: dict, room: dict) -> dict:
@@ -386,6 +676,8 @@ def roll_dice(room_code: str, player_token: str) -> dict:
             raise HTTPException(status_code=400, detail="You already rolled this turn.")
 
         game["last_effects"] = []
+        game["pending_purchase"] = None
+        game["last_drawn_card"] = None
         turn["last_roll"] = None
         turn["is_doubles"] = False
 
@@ -398,22 +690,43 @@ def roll_dice(room_code: str, player_token: str) -> dict:
         turn["is_doubles"] = is_doubles
 
         player_id = player["player_id"]
-        player_ids = [member["player_id"] for member in room["players"]]
-        next_index = (player_ids.index(player_id) + 1) % len(player_ids)
-        next_player_id = player_ids[next_index]
+        next_player_id = _get_next_player_id(room, player_id)
 
         if game["in_jail"][player_id]:
             if is_doubles:
                 game["in_jail"][player_id] = False
                 game["doubles_streak"][player_id] = 0
-                landed_position, sent_to_jail, effects = _resolve_landing(
-                    game,
+                landed_position, sent_to_jail, pending_purchase_created, effects = _resolve_landing(
+                    room,
                     player_id,
                     game["positions"][player_id],
                     total,
                 )
                 effects.insert(0, "Rolled doubles to leave Jail.")
                 _set_last_resolution(game, player_id, landed_position, effects)
+
+                if not sent_to_jail and not pending_purchase_created:
+                    pending_purchase_created = _resolve_buyable_cell(
+                        room,
+                        player_id,
+                        landed_position,
+                        total,
+                        game["last_effects"],
+                    )
+
+                if pending_purchase_created:
+                    # Jail escape never grants an extra turn - override so
+                    # _resume_turn_after_purchase sends to next player.
+                    turn["is_doubles"] = False
+                    turn["current_player_id"] = player_id
+                    turn["can_roll"] = False
+                    turn["turn_number"] += 1
+                    _touch_room(room)
+                    return _build_action_response(player, room)
+
+                if _handle_bankruptcy(room, player):
+                    return _build_action_response(player, room)
+
                 turn["current_player_id"] = next_player_id
             else:
                 _set_last_resolution(
@@ -450,17 +763,38 @@ def roll_dice(room_code: str, player_token: str) -> dict:
             _touch_room(room)
             return _build_action_response(player, room)
 
-        landed_position, sent_to_jail, effects = _resolve_landing(
-            game,
+        landed_position, sent_to_jail, pending_purchase_created, effects = _resolve_landing(
+            room,
             player_id,
             game["positions"][player_id],
             total,
         )
         _set_last_resolution(game, player_id, landed_position, effects)
 
+        if not sent_to_jail and not pending_purchase_created:
+            pending_purchase_created = _resolve_buyable_cell(
+                room,
+                player_id,
+                landed_position,
+                total,
+                game["last_effects"],
+            )
+
+        if _handle_bankruptcy(room, player):
+            return _build_action_response(player, room)
+
         if sent_to_jail:
-            game["last_effects"].append("Doubles forfeited - sent to Jail.")
+            if is_doubles:
+                game["last_effects"].append("Doubles forfeited - sent to Jail.")
             turn["current_player_id"] = next_player_id
+        elif pending_purchase_created:
+            if is_doubles:
+                game["last_effects"].append("Resolve the purchase first to use your extra turn.")
+            turn["current_player_id"] = player_id
+            turn["can_roll"] = False
+            turn["turn_number"] += 1
+            _touch_room(room)
+            return _build_action_response(player, room)
         elif is_doubles:
             game["last_effects"].append("Rolled doubles, so you take another turn.")
         else:
@@ -468,6 +802,161 @@ def roll_dice(room_code: str, player_token: str) -> dict:
 
         turn["turn_number"] += 1
         turn["can_roll"] = True
+        _touch_room(room)
+
+    return _build_action_response(player, room)
+
+
+def _require_pending_purchase(room: dict, player_token: str) -> tuple[dict, dict, dict]:
+    if room["status"] != ROOM_STATUS_IN_GAME or room.get("game") is None:
+        raise HTTPException(status_code=400, detail="Game has not started yet.")
+
+    player = _find_player_by_token(room, player_token)
+    game = room["game"]
+    pending_purchase = game.get("pending_purchase")
+
+    if pending_purchase is None:
+        raise HTTPException(status_code=400, detail="There is no property waiting to be resolved.")
+
+    if pending_purchase["player_id"] != player["player_id"]:
+        raise HTTPException(status_code=403, detail="Only the active player can resolve this purchase.")
+
+    return player, game, pending_purchase
+
+
+def buy_property(room_code: str, player_token: str) -> dict:
+    normalized_room_code = _normalize_room_code(room_code)
+
+    with _rooms_lock:
+        room = _find_room_or_raise(normalized_room_code)
+        player, game, pending_purchase = _require_pending_purchase(room, player_token)
+        player_id = player["player_id"]
+        position = pending_purchase["position"]
+        cell = _get_board_cell(position)
+        price = pending_purchase["price"]
+
+        if not _is_buyable_cell(cell):
+            raise HTTPException(status_code=400, detail="This cell cannot be purchased.")
+
+        if position in game["property_owners"]:
+            raise HTTPException(status_code=400, detail="This property is already owned.")
+
+        if game["cash"][player_id] < price:
+            raise HTTPException(
+                status_code=400,
+                detail="You do not have enough cash to buy this property.",
+            )
+
+        game["cash"][player_id] -= price
+        game["property_owners"][position] = player_id
+        game["pending_purchase"] = None
+        game["last_effects"].append(f"Bought {cell['name']} for ${price}.")
+
+        if _owns_full_color_group(game, player_id, position):
+            game["last_effects"].append(
+                f"Completed the {cell['color_group'].replace('_', ' ')} set. Upgrades unlocked."
+            )
+
+        _resume_turn_after_purchase(room, player_id)
+        _touch_room(room)
+
+    return _build_action_response(player, room)
+
+
+def skip_property_purchase(room_code: str, player_token: str) -> dict:
+    normalized_room_code = _normalize_room_code(room_code)
+
+    with _rooms_lock:
+        room = _find_room_or_raise(normalized_room_code)
+        player, game, pending_purchase = _require_pending_purchase(room, player_token)
+        player_id = player["player_id"]
+        cell = _get_board_cell(pending_purchase["position"])
+
+        game["pending_purchase"] = None
+        game["last_effects"].append(f"Passed on buying {cell['name']}.")
+        _resume_turn_after_purchase(room, player_id)
+        _touch_room(room)
+
+    return _build_action_response(player, room)
+
+
+def upgrade_property(room_code: str, player_token: str, position: int) -> dict:
+    normalized_room_code = _normalize_room_code(room_code)
+
+    with _rooms_lock:
+        room = _find_room_or_raise(normalized_room_code)
+
+        if room["status"] != ROOM_STATUS_IN_GAME or room.get("game") is None:
+            raise HTTPException(status_code=400, detail="Game has not started yet.")
+
+        player = _find_player_by_token(room, player_token)
+        game = room["game"]
+        turn = game["turn"]
+        player_id = player["player_id"]
+
+        if turn["current_player_id"] != player_id:
+            raise HTTPException(status_code=403, detail="It is not your turn.")
+
+        if not turn["can_roll"]:
+            raise HTTPException(
+                status_code=400,
+                detail="You can only upgrade properties before rolling this turn.",
+            )
+
+        if game["pending_purchase"] is not None:
+            raise HTTPException(
+                status_code=400,
+                detail="Resolve the pending purchase before upgrading properties.",
+            )
+
+        if position < 0 or position >= BOARD_SIZE:
+            raise HTTPException(status_code=400, detail="Invalid board position.")
+
+        cell = _get_board_cell(position)
+
+        if cell["cell_type"] != "property" or cell.get("price") is None:
+            raise HTTPException(
+                status_code=400,
+                detail="Only standard property cells can be upgraded.",
+            )
+
+        if game["property_owners"].get(position) != player_id:
+            raise HTTPException(
+                status_code=403,
+                detail="You can only upgrade properties that you own.",
+            )
+
+        if not _owns_full_color_group(game, player_id, position):
+            raise HTTPException(
+                status_code=400,
+                detail="You need the full color group before upgrading this property.",
+            )
+
+        current_level = _get_property_level(game, position)
+
+        if current_level >= MAX_PROPERTY_LEVEL:
+            raise HTTPException(
+                status_code=400,
+                detail="This property is already at the maximum upgrade level.",
+            )
+
+        upgrade_cost = _get_upgrade_cost(cell)
+
+        if game["cash"][player_id] < upgrade_cost:
+            raise HTTPException(
+                status_code=400,
+                detail="You do not have enough cash to upgrade this property.",
+            )
+
+        game["cash"][player_id] -= upgrade_cost
+        new_level = current_level + 1
+        game["property_levels"][position] = new_level
+        new_rent = _calculate_rent(game, player_id, position, 0)
+        game["last_drawn_card"] = None
+        game["last_effects"] = [
+            f"Upgraded {cell['name']} to level {new_level} for ${upgrade_cost}.",
+            f"Rent is now ${new_rent}.",
+        ]
         _touch_room(room)
 
     return _build_action_response(player, room)

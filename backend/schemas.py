@@ -31,6 +31,19 @@ class RollDiceRequest(BaseModel):
     player_token: str = Field(min_length=32, max_length=32)
 
 
+class BuyPropertyRequest(BaseModel):
+    player_token: str = Field(min_length=32, max_length=32)
+
+
+class SkipPurchaseRequest(BaseModel):
+    player_token: str = Field(min_length=32, max_length=32)
+
+
+class UpgradePropertyRequest(BaseModel):
+    player_token: str = Field(min_length=32, max_length=32)
+    position: int = Field(ge=0, le=39)
+
+
 class PlayerResponse(BaseModel):
     player_id: str
     nickname: str
@@ -56,13 +69,31 @@ class TurnStateResponse(BaseModel):
     can_roll: bool
 
 
+class PendingPurchaseResponse(BaseModel):
+    player_id: str
+    position: int
+    price: int
+    cell_name: str
+    cell_type: str
+
+
+class DrawnCardResponse(BaseModel):
+    deck: str
+    title: str
+    description: str
+
+
 class GameStateResponse(BaseModel):
     board: list[BoardCellResponse]
     turn: TurnStateResponse
     positions: dict[str, int]
     cash: dict[str, int]
+    property_owners: dict[int, str]
+    property_levels: dict[int, int]
     in_jail: dict[str, bool]
     doubles_streak: dict[str, int]
+    pending_purchase: PendingPurchaseResponse | None = None
+    last_drawn_card: DrawnCardResponse | None = None
     winner_id: str | None = None
     last_landed_player_id: str | None = None
     last_landed_position: int | None = None
