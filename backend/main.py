@@ -2,12 +2,16 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from room_store import (
+    bid_in_auction,
     buy_property,
     create_room,
+    declare_bankruptcy,
     get_room,
     join_room,
     leave_room,
     mortgage_property,
+    pay_jail_fine,
+    pass_auction,
     propose_trade,
     rejoin_room,
     respond_to_trade,
@@ -20,12 +24,16 @@ from room_store import (
     upgrade_property,
 )
 from schemas import (
+    BidAuctionRequest,
     BuyPropertyRequest,
     CreateRoomRequest,
+    DeclareBankruptcyRequest,
     JoinRoomRequest,
     LeaveRoomRequest,
     LeaveRoomResponse,
     MortgagePropertyRequest,
+    PayJailFineRequest,
+    PassAuctionRequest,
     ProposeTradeRequest,
     RejoinRoomRequest,
     ReadyStateRequest,
@@ -96,6 +104,16 @@ def roll_dice_endpoint(room_code: str, payload: RollDiceRequest):
     return roll_dice(room_code, payload.player_token)
 
 
+@app.post("/rooms/{room_code}/jail/pay-fine", response_model=RoomActionResponse)
+def pay_jail_fine_endpoint(room_code: str, payload: PayJailFineRequest):
+    return pay_jail_fine(room_code, payload.player_token)
+
+
+@app.post("/rooms/{room_code}/bankruptcy/declare", response_model=RoomActionResponse)
+def declare_bankruptcy_endpoint(room_code: str, payload: DeclareBankruptcyRequest):
+    return declare_bankruptcy(room_code, payload.player_token)
+
+
 @app.post("/rooms/{room_code}/buy", response_model=RoomActionResponse)
 def buy_property_endpoint(room_code: str, payload: BuyPropertyRequest):
     return buy_property(room_code, payload.player_token)
@@ -104,6 +122,16 @@ def buy_property_endpoint(room_code: str, payload: BuyPropertyRequest):
 @app.post("/rooms/{room_code}/skip-purchase", response_model=RoomActionResponse)
 def skip_purchase_endpoint(room_code: str, payload: SkipPurchaseRequest):
     return skip_property_purchase(room_code, payload.player_token)
+
+
+@app.post("/rooms/{room_code}/auction/bid", response_model=RoomActionResponse)
+def bid_auction_endpoint(room_code: str, payload: BidAuctionRequest):
+    return bid_in_auction(room_code, payload.player_token, payload.amount)
+
+
+@app.post("/rooms/{room_code}/auction/pass", response_model=RoomActionResponse)
+def pass_auction_endpoint(room_code: str, payload: PassAuctionRequest):
+    return pass_auction(room_code, payload.player_token)
 
 
 @app.post("/rooms/{room_code}/upgrade", response_model=RoomActionResponse)

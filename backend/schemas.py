@@ -31,11 +31,28 @@ class RollDiceRequest(BaseModel):
     player_token: str = Field(min_length=32, max_length=32)
 
 
+class PayJailFineRequest(BaseModel):
+    player_token: str = Field(min_length=32, max_length=32)
+
+
+class DeclareBankruptcyRequest(BaseModel):
+    player_token: str = Field(min_length=32, max_length=32)
+
+
 class BuyPropertyRequest(BaseModel):
     player_token: str = Field(min_length=32, max_length=32)
 
 
 class SkipPurchaseRequest(BaseModel):
+    player_token: str = Field(min_length=32, max_length=32)
+
+
+class BidAuctionRequest(BaseModel):
+    player_token: str = Field(min_length=32, max_length=32)
+    amount: int = Field(ge=1)
+
+
+class PassAuctionRequest(BaseModel):
     player_token: str = Field(min_length=32, max_length=32)
 
 
@@ -119,6 +136,26 @@ class PendingTradeResponse(BaseModel):
     cash_amount: int
 
 
+class PendingAuctionResponse(BaseModel):
+    initiator_player_id: str
+    active_player_id: str
+    highest_bidder_id: str | None = None
+    position: int
+    cell_name: str
+    cell_type: str
+    price: int
+    current_bid: int
+    eligible_player_ids: list[str]
+    passed_player_ids: list[str]
+
+
+class PendingBankruptcyResponse(BaseModel):
+    player_id: str
+    amount_owed: int
+    creditor_type: str = "bank"
+    creditor_player_id: str | None = None
+
+
 class GameStateResponse(BaseModel):
     board: list[BoardCellResponse]
     turn: TurnStateResponse
@@ -129,8 +166,11 @@ class GameStateResponse(BaseModel):
     property_mortgaged: dict[int, bool]
     in_jail: dict[str, bool]
     doubles_streak: dict[str, int]
+    turns_in_jail: dict[str, int]
     pending_purchase: PendingPurchaseResponse | None = None
     pending_trade: PendingTradeResponse | None = None
+    pending_auction: PendingAuctionResponse | None = None
+    pending_bankruptcy: PendingBankruptcyResponse | None = None
     last_drawn_card: DrawnCardResponse | None = None
     winner_id: str | None = None
     last_landed_player_id: str | None = None

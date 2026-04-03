@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 
 const API_BASE_URL = "http://127.0.0.1:8000";
 const SESSION_STORAGE_KEY = "monopoly_player_session";
+const JAIL_FINE_AMOUNT = 50;
 const MAX_PROPERTY_LEVEL = 4;
 const PROPERTY_RENT_MULTIPLIERS = [1, 2, 4, 7, 11];
 
@@ -88,7 +89,7 @@ function getUnmortgageCost(cell) {
     return null;
   }
 
-  return Math.ceil(mortgageValue * 1.1);
+  return mortgageValue + Math.ceil(mortgageValue / 10);
 }
 
 function getRentHint(cell, level = 0) {
@@ -161,6 +162,7 @@ function App() {
   const [selectedTradeTargetId, setSelectedTradeTargetId] = useState("");
   const [selectedTradePosition, setSelectedTradePosition] = useState("");
   const [tradeCashAmount, setTradeCashAmount] = useState("0");
+  const [auctionBidAmount, setAuctionBidAmount] = useState("1");
   const currentRoomCode = currentRoom?.room_code ?? null;
   const isLobbyOpen = currentRoom?.status === "lobby";
   const isGameOpen = currentRoom?.status === "in_game";
@@ -171,6 +173,8 @@ function App() {
   const propertyMortgaged = currentRoom?.game?.property_mortgaged ?? {};
   const pendingPurchase = currentRoom?.game?.pending_purchase ?? null;
   const pendingTrade = currentRoom?.game?.pending_trade ?? null;
+  const pendingAuction = currentRoom?.game?.pending_auction ?? null;
+  const pendingBankruptcy = currentRoom?.game?.pending_bankruptcy ?? null;
   const lastDrawnCard = currentRoom?.game?.last_drawn_card ?? null;
   const winnerId = currentRoom?.game?.winner_id ?? null;
   const winnerPlayer =
@@ -191,7 +195,9 @@ function App() {
     isGameOpen &&
     currentTurnPlayerId === playerId &&
     (currentRoom?.game?.turn.can_roll ?? false) &&
-    !pendingTrade;
+    !pendingTrade &&
+    !pendingAuction &&
+    !pendingBankruptcy;
   const canResolvePurchase =
     isGameOpen &&
     pendingPurchase?.player_id === playerId &&
@@ -200,6 +206,8 @@ function App() {
     currentRoom?.game?.in_jail?.[playerId] ?? false;
   const currentPlayerDoublesStreak =
     currentRoom?.game?.doubles_streak?.[playerId] ?? 0;
+  const currentPlayerTurnsInJail =
+    currentRoom?.game?.turns_in_jail?.[playerId] ?? 0;
   const lastLandedPlayerId = currentRoom?.game?.last_landed_player_id ?? null;
   const lastLandedPosition = currentRoom?.game?.last_landed_position ?? null;
   const lastEffects = currentRoom?.game?.last_effects ?? [];
@@ -227,6 +235,35 @@ function App() {
   const pendingTradeReceiver =
     currentRoom?.players.find((player) => player.player_id === pendingTrade?.receiver_id) ??
     null;
+  const pendingAuctionCell =
+    boardCells.find((cell) => cell.index === pendingAuction?.position) ?? null;
+  const pendingAuctionInitiator =
+    currentRoom?.players.find((player) => player.player_id === pendingAuction?.initiator_player_id) ??
+    null;
+  const pendingAuctionActivePlayer =
+    currentRoom?.players.find((player) => player.player_id === pendingAuction?.active_player_id) ??
+    null;
+  const pendingAuctionHighestBidder =
+    currentRoom?.players.find((player) => player.player_id === pendingAuction?.highest_bidder_id) ??
+    null;
+  const pendingAuctionPassedPlayers =
+    currentRoom?.players.filter((player) =>
+      pendingAuction?.passed_player_ids?.includes(player.player_id),
+    ) ?? [];
+  const pendingBankruptcyPlayer =
+    currentRoom?.players.find((player) => player.player_id === pendingBankruptcy?.player_id) ??
+    null;
+  const pendingBankruptcyCreditor =
+    pendingBankruptcy?.creditor_type === "player"
+      ? currentRoom?.players.find((player) => player.player_id === pendingBankruptcy?.creditor_player_id) ??
+        null
+      : null;
+  const pendingBankruptcyCreditorLabel =
+    pendingBankruptcy?.creditor_type === "player"
+      ? pendingBankruptcyCreditor?.nickname ?? "another player"
+      : "the bank";
+  const minimumAuctionBid = pendingAuction ? Math.max(1, pendingAuction.current_bid + 1) : 1;
+  const currentPlayerCash = currentRoom?.game?.cash?.[playerId] ?? 0;
 
   function getCellByPosition(position) {
     return boardCells.find((cell) => cell.index === position) ?? null;
@@ -318,9 +355,17 @@ function App() {
     (currentRoom?.game?.turn.can_roll ?? false) &&
     !pendingPurchase &&
     !pendingTrade &&
+    !pendingAuction &&
+    !pendingBankruptcy &&
     Boolean(playerToken);
   const canUpgradeProperties = canUsePreRollDesk;
-  const canManageMortgages = canUsePreRollDesk;
+  const canManageDebtRecovery =
+    isGameOpen &&
+    pendingBankruptcy?.player_id === playerId &&
+    Boolean(playerToken);
+  const canManageMortgages = canUsePreRollDesk || canManageDebtRecovery;
+  const canSellUpgrades = canUsePreRollDesk || canManageDebtRecovery;
+  const canUnmortgageProperties = canUsePreRollDesk;
   const mortgageableCells =
     currentPlayer == null
       ? []
@@ -378,7 +423,7 @@ function App() {
 
           return true;
         });
-  const canProposeTrade = canUsePreRollDesk;
+  const canProposeTrade = canUsePreRollDesk || canManageDebtRecovery;
   const canAcceptTrade =
     isGameOpen &&
     pendingTrade?.receiver_id === playerId &&
@@ -387,6 +432,15 @@ function App() {
     isGameOpen &&
     (pendingTrade?.receiver_id === playerId || pendingTrade?.proposer_id === playerId) &&
     Boolean(playerToken);
+  const canBidInAuction =
+    isGameOpen &&
+    pendingAuction?.active_player_id === playerId &&
+    Boolean(playerToken);
+  const canPassAuction = canBidInAuction;
+  const canAffordAuctionBid = currentPlayerCash >= minimumAuctionBid;
+  const canPayJailFine = canUsePreRollDesk && isCurrentPlayerInJail;
+  const canAffordJailFine = currentPlayerCash >= JAIL_FINE_AMOUNT;
+  const canDeclareBankruptcy = canManageDebtRecovery;
 
   useEffect(() => {
     const nextTradeTargets =
@@ -446,6 +500,19 @@ function App() {
       setSelectedTradePosition(nextTradeableCells[0] ? String(nextTradeableCells[0].index) : "");
     }
   }, [selectedTradePosition, currentPlayer, currentRoom]);
+
+  useEffect(() => {
+    if (!pendingAuction) {
+      setAuctionBidAmount("1");
+      return;
+    }
+
+    const parsedBid = Number.parseInt(auctionBidAmount, 10);
+
+    if (!Number.isInteger(parsedBid) || parsedBid < minimumAuctionBid) {
+      setAuctionBidAmount(String(minimumAuctionBid));
+    }
+  }, [pendingAuction, auctionBidAmount, minimumAuctionBid]);
 
   useEffect(() => {
     fetch(`${API_BASE_URL}/`)
@@ -788,6 +855,98 @@ function App() {
     }
   }
 
+  async function handlePayJailFine() {
+    if (!currentRoom || !playerToken || !isCurrentPlayerInJail) {
+      setStatus("You must be in jail before paying the fine.");
+      return;
+    }
+
+    setIsSubmitting(true);
+    setStatus(`Paying $${JAIL_FINE_AMOUNT} to leave jail...`);
+
+    try {
+      const response = await fetch(
+        `${API_BASE_URL}/rooms/${currentRoom.room_code}/jail/pay-fine`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            player_token: playerToken,
+          }),
+        },
+      );
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.detail || "Jail fine payment failed.");
+      }
+
+      setPlayerId(data.player_id);
+      setPlayerToken(data.player_token);
+      setCurrentRoom(data.room);
+      saveStoredSession({
+        player_id: data.player_id,
+        player_token: data.player_token,
+        room_code: data.room.room_code,
+        nickname: currentPlayer?.nickname ?? nickname.trim(),
+      });
+      setStatus(`You paid $${JAIL_FINE_AMOUNT} and left jail. Roll when ready.`);
+    } catch (error) {
+      setStatus(error.message);
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
+  async function handleDeclareBankruptcy() {
+    if (!currentRoom || !playerToken || !canDeclareBankruptcy) {
+      setStatus("You can only declare bankruptcy during your own debt recovery.");
+      return;
+    }
+
+    setIsSubmitting(true);
+    setStatus("Declaring bankruptcy...");
+
+    try {
+      const response = await fetch(
+        `${API_BASE_URL}/rooms/${currentRoom.room_code}/bankruptcy/declare`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            player_token: playerToken,
+          }),
+        },
+      );
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.detail || "Declare bankruptcy failed.");
+      }
+
+      setPlayerId(data.player_id);
+      setPlayerToken(data.player_token);
+      setCurrentRoom(data.room);
+      saveStoredSession({
+        player_id: data.player_id,
+        player_token: data.player_token,
+        room_code: data.room.room_code,
+        nickname: currentPlayer?.nickname ?? nickname.trim(),
+      });
+      setStatus("You declared bankruptcy and were eliminated.");
+    } catch (error) {
+      setStatus(error.message);
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
   async function handleLeaveRoom() {
     if (currentRoom && !currentPlayer) {
       clearStoredSession();
@@ -922,7 +1081,124 @@ function App() {
         room_code: data.room.room_code,
         nickname: currentPlayer?.nickname ?? nickname.trim(),
       });
-      setStatus(`You passed on buying ${pendingPurchaseCell.name}.`);
+      const effects = data.room.game?.last_effects ?? [];
+      setStatus(
+        effects.length > 0
+          ? effects.join(" ")
+          : `You passed on buying ${pendingPurchaseCell.name}.`,
+      );
+    } catch (error) {
+      setStatus(error.message);
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
+  async function handleBidInAuction() {
+    if (!currentRoom || !playerToken || !pendingAuctionCell) {
+      setStatus("There is no auction waiting for your bid.");
+      return;
+    }
+
+    const bidAmount = Number.parseInt(auctionBidAmount, 10);
+
+    if (!Number.isInteger(bidAmount) || bidAmount < minimumAuctionBid) {
+      setStatus(`Enter a valid bid of at least $${minimumAuctionBid}.`);
+      return;
+    }
+
+    setIsSubmitting(true);
+    setStatus(`Bidding $${bidAmount} on ${pendingAuctionCell.name}...`);
+
+    try {
+      const response = await fetch(
+        `${API_BASE_URL}/rooms/${currentRoom.room_code}/auction/bid`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            player_token: playerToken,
+            amount: bidAmount,
+          }),
+        },
+      );
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.detail || "Auction bid failed.");
+      }
+
+      setPlayerId(data.player_id);
+      setPlayerToken(data.player_token);
+      setCurrentRoom(data.room);
+      saveStoredSession({
+        player_id: data.player_id,
+        player_token: data.player_token,
+        room_code: data.room.room_code,
+        nickname: currentPlayer?.nickname ?? nickname.trim(),
+      });
+
+      const effects = data.room.game?.last_effects ?? [];
+      setStatus(
+        effects.length > 0
+          ? effects.join(" ")
+          : `You bid $${bidAmount} for ${pendingAuctionCell.name}.`,
+      );
+    } catch (error) {
+      setStatus(error.message);
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
+  async function handlePassAuction() {
+    if (!currentRoom || !playerToken || !pendingAuctionCell) {
+      setStatus("There is no auction waiting for your decision.");
+      return;
+    }
+
+    setIsSubmitting(true);
+    setStatus(`Passing in the auction for ${pendingAuctionCell.name}...`);
+
+    try {
+      const response = await fetch(
+        `${API_BASE_URL}/rooms/${currentRoom.room_code}/auction/pass`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            player_token: playerToken,
+          }),
+        },
+      );
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.detail || "Auction pass failed.");
+      }
+
+      setPlayerId(data.player_id);
+      setPlayerToken(data.player_token);
+      setCurrentRoom(data.room);
+      saveStoredSession({
+        player_id: data.player_id,
+        player_token: data.player_token,
+        room_code: data.room.room_code,
+        nickname: currentPlayer?.nickname ?? nickname.trim(),
+      });
+
+      const effects = data.room.game?.last_effects ?? [];
+      setStatus(
+        effects.length > 0
+          ? effects.join(" ")
+          : `You passed in the auction for ${pendingAuctionCell.name}.`,
+      );
     } catch (error) {
       setStatus(error.message);
     } finally {
@@ -1608,7 +1884,94 @@ function App() {
                     </section>
                   )}
 
-                  {(pendingTrade || (tradeableCells.length > 0 && tradeTargets.length > 0)) && (
+                  {pendingAuction && (
+                    <section className="trade-card board-center-section">
+                      <h3>Auction</h3>
+                      <p>
+                        <strong>{pendingAuctionCell?.name ?? pendingAuction.cell_name}</strong> is
+                        now being auctioned after{" "}
+                        <strong>{pendingAuctionInitiator?.nickname ?? "the active player"}</strong>{" "}
+                        passed on the direct purchase.
+                      </p>
+                      <p className="trade-meta">
+                        Type:{" "}
+                        <strong>
+                          {formatCellType(pendingAuctionCell?.cell_type ?? pendingAuction.cell_type)}
+                        </strong>
+                      </p>
+                      <p className="trade-meta">
+                        Printed price: <strong>${pendingAuction.price}</strong> &middot; Current bid:{" "}
+                        <strong>${pendingAuction.current_bid}</strong>
+                      </p>
+                      <p className="trade-meta">
+                        Highest bidder:{" "}
+                        <strong>{pendingAuctionHighestBidder?.nickname ?? "No bids yet"}</strong>{" "}
+                        &middot; Active player:{" "}
+                        <strong>{pendingAuctionActivePlayer?.nickname ?? "Waiting"}</strong>
+                      </p>
+                      {pendingAuctionPassedPlayers.length > 0 && (
+                        <p className="trade-meta">
+                          Passed:{" "}
+                          <strong>
+                            {pendingAuctionPassedPlayers.map((player) => player.nickname).join(", ")}
+                          </strong>
+                        </p>
+                      )}
+                      {canBidInAuction ? (
+                        <>
+                          <div className="trade-form">
+                            <label className="trade-field">
+                              <span>Your bid</span>
+                              <input
+                                className="trade-input"
+                                type="number"
+                                min={minimumAuctionBid}
+                                step="1"
+                                value={auctionBidAmount}
+                                onChange={(event) => setAuctionBidAmount(event.target.value)}
+                              />
+                            </label>
+                          </div>
+                          <div className="trade-actions">
+                            <button
+                              type="button"
+                              className="trade-button accept-button"
+                              onClick={handleBidInAuction}
+                              disabled={isSubmitting || !canAffordAuctionBid}
+                            >
+                              Place bid
+                            </button>
+                            <button
+                              type="button"
+                              className="trade-button reject-button"
+                              onClick={handlePassAuction}
+                              disabled={isSubmitting || !canPassAuction}
+                            >
+                              Pass
+                            </button>
+                          </div>
+                          <p className="trade-note">
+                            Minimum next bid: <strong>${minimumAuctionBid}</strong> &middot; Your
+                            cash: <strong>${currentPlayerCash}</strong>
+                          </p>
+                          {!canAffordAuctionBid && (
+                            <p className="trade-note">
+                              You cannot afford the next bid, so the only valid move is to pass.
+                            </p>
+                          )}
+                        </>
+                      ) : (
+                        <p className="trade-note">
+                          Waiting for {pendingAuctionActivePlayer?.nickname ?? "the active bidder"} to
+                          bid or pass.
+                        </p>
+                      )}
+                    </section>
+                  )}
+
+                  {!pendingAuction &&
+                    (pendingTrade ||
+                      (canProposeTrade && tradeableCells.length > 0 && tradeTargets.length > 0)) && (
                     <section className="trade-card board-center-section">
                       <h3>Trade desk</h3>
                       {pendingTrade ? (
@@ -1657,8 +2020,10 @@ function App() {
                       ) : (
                         <>
                           <p>
-                            Offer one of your unmortgaged cells for cash before rolling. This MVP
-                            trade flow is property-for-cash only.
+                            {canManageDebtRecovery
+                              ? "Offer one of your unmortgaged cells for cash to escape bankruptcy."
+                              : "Offer one of your unmortgaged cells for cash before rolling."}{" "}
+                            This MVP trade flow is property-for-cash only.
                           </p>
                           <div className="trade-form">
                             <label className="trade-field">
@@ -1725,12 +2090,14 @@ function App() {
                     </section>
                   )}
 
-                  {(mortgageableCells.length > 0 || unmortgageableCells.length > 0) && (
+                  {!pendingAuction &&
+                    (mortgageableCells.length > 0 || (unmortgageableCells.length > 0 && !canManageDebtRecovery)) && (
                     <section className="mortgage-card board-center-section">
                       <h3>Mortgage desk</h3>
                       <p>
-                        Use mortgages to raise cash before rolling. Mortgaged cells stop charging
-                        rent until you buy them back.
+                        {canManageDebtRecovery
+                          ? "Raise cash to escape bankruptcy. Mortgages add cash immediately and stop rent until you buy the property back."
+                          : "Use mortgages to raise cash before rolling. Mortgaged cells stop charging rent until you buy them back."}
                       </p>
 
                       {mortgageableCells.length > 0 && (
@@ -1762,7 +2129,7 @@ function App() {
                         </div>
                       )}
 
-                      {unmortgageableCells.length > 0 && (
+                      {unmortgageableCells.length > 0 && !canManageDebtRecovery && (
                         <div className="mortgage-group">
                           <h4>Currently mortgaged</h4>
                           <div className="mortgage-list">
@@ -1780,7 +2147,7 @@ function App() {
                                     type="button"
                                     className="unmortgage-button"
                                     onClick={() => handleUnmortgageProperty(cell.index)}
-                                    disabled={isSubmitting || !canManageMortgages}
+                                    disabled={isSubmitting || !canUnmortgageProperties}
                                   >
                                     Unmortgage
                                   </button>
@@ -1791,7 +2158,7 @@ function App() {
                         </div>
                       )}
 
-                      {!canManageMortgages && (
+                      {!canManageMortgages && !canManageDebtRecovery && (
                         <p className="mortgage-note">
                           Mortgages can only be managed at the start of your turn, before you roll.
                         </p>
@@ -1799,14 +2166,16 @@ function App() {
                     </section>
                   )}
 
-                  {(upgradeableProperties.length > 0 || sellableProperties.length > 0) && (
+                  {!pendingAuction &&
+                    ((!canManageDebtRecovery && upgradeableProperties.length > 0) || sellableProperties.length > 0) && (
                     <section className="upgrade-card board-center-section">
                       <h3>Property management</h3>
                       <p>
-                        Build or sell upgrades before rolling. This is our simplified houses system
-                        for the MVP.
+                        {canManageDebtRecovery
+                          ? "Sell upgrades to raise cash and escape bankruptcy. Building is locked until the debt is resolved."
+                          : "Build or sell upgrades before rolling. This is our simplified houses system for the MVP."}
                       </p>
-                      {upgradeableProperties.length > 0 && (
+                      {!canManageDebtRecovery && upgradeableProperties.length > 0 && (
                         <div className="upgrade-group">
                           <h4>Build upgrades</h4>
                           <div className="upgrade-list">
@@ -1878,7 +2247,7 @@ function App() {
                                     type="button"
                                     className="sell-button"
                                     onClick={() => handleSellUpgradeProperty(cell.index)}
-                                    disabled={isSubmitting || !canUpgradeProperties}
+                                    disabled={isSubmitting || !canSellUpgrades}
                                   >
                                     Sell upgrade
                                   </button>
@@ -1888,7 +2257,7 @@ function App() {
                           </div>
                         </div>
                       )}
-                      {!canUpgradeProperties && (
+                      {!canUpgradeProperties && !canManageDebtRecovery && (
                         <p className="upgrade-note">
                           Upgrade changes are only available at the start of your own turn, before you roll.
                         </p>
@@ -1908,6 +2277,19 @@ function App() {
                         You can buy {pendingPurchaseCell.name} for ${pendingPurchase?.price} or pass.
                       </p>
                     )}
+                    {pendingAuction && !canBidInAuction && (
+                      <p className="purchase-note">
+                        Waiting for {pendingAuctionActivePlayer?.nickname ?? "the active bidder"} to
+                        resolve the auction for{" "}
+                        {pendingAuctionCell?.name ?? pendingAuction.cell_name}.
+                      </p>
+                    )}
+                    {pendingAuction && canBidInAuction && (
+                      <p className="purchase-note">
+                        You can bid at least ${minimumAuctionBid} for{" "}
+                        {pendingAuctionCell?.name ?? pendingAuction.cell_name}, or pass.
+                      </p>
+                    )}
                     {pendingTrade && !canAcceptTrade && !canRejectTrade && (
                       <p className="purchase-note">
                         Waiting for {pendingTradeReceiver?.nickname ?? "the receiving player"} to
@@ -1925,8 +2307,54 @@ function App() {
                         Your turn is paused until the trade is accepted, rejected, or cancelled.
                       </p>
                     )}
+                    {pendingBankruptcy && !canManageDebtRecovery && (
+                      <p className="purchase-note">
+                        Waiting for {pendingBankruptcyPlayer?.nickname ?? "the active player"} to recover $
+                        {pendingBankruptcy.amount_owed} owed to {pendingBankruptcyCreditorLabel} or
+                        declare bankruptcy.
+                      </p>
+                    )}
+                    {canManageDebtRecovery && (
+                      <p className="purchase-note">
+                        You owe {pendingBankruptcyCreditorLabel} ${pendingBankruptcy?.amount_owed ?? 0}.
+                        Sell upgrades, mortgage cells, or trade property for cash to cover the debt, or
+                        declare bankruptcy. If you go bankrupt, any remaining upgrades are sold back to
+                        the bank automatically before assets transfer, and any already mortgaged
+                        properties stay mortgaged for the new owner.
+                      </p>
+                    )}
                     {isCurrentPlayerInJail && (
-                      <p className="jail-notice">You are in jail. Roll doubles to escape.</p>
+                      <p className="jail-notice">
+                        You are in jail. Turn {currentPlayerTurnsInJail}/3.{" "}
+                        {currentPlayerTurnsInJail >= 2
+                          ? `Next failed roll forces a $${JAIL_FINE_AMOUNT} fine and you move.`
+                          : `Roll doubles to escape for free, or pay $${JAIL_FINE_AMOUNT} before rolling.`}
+                      </p>
+                    )}
+                    {canPayJailFine && (
+                      <button
+                        type="button"
+                        className="buy-button"
+                        onClick={handlePayJailFine}
+                        disabled={isSubmitting || !canAffordJailFine}
+                      >
+                        Pay ${JAIL_FINE_AMOUNT} fine
+                      </button>
+                    )}
+                    {canPayJailFine && !canAffordJailFine && (
+                      <p className="purchase-note">
+                        You need at least ${JAIL_FINE_AMOUNT} cash to pay your way out before rolling.
+                      </p>
+                    )}
+                    {canDeclareBankruptcy && (
+                      <button
+                        type="button"
+                        className="pass-button"
+                        onClick={handleDeclareBankruptcy}
+                        disabled={isSubmitting}
+                      >
+                        Declare bankruptcy
+                      </button>
                     )}
                     {!isCurrentPlayerInJail && currentPlayerDoublesStreak > 0 && (
                       <p className="doubles-notice">

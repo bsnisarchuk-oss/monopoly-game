@@ -20,10 +20,14 @@ _CLEANUP_INTERVAL_SECONDS = 10 * 60
 STARTING_CASH = 1500
 BOARD_SIZE = len(BOARD_CELLS)
 JAIL_POSITION = 10
+JAIL_FINE_AMOUNT = 50
 MAX_DOUBLES_STREAK = 3
+MAX_JAIL_TURNS = 3
 BUYABLE_CELL_TYPES = {"property", "railroad", "utility"}
 MAX_PROPERTY_LEVEL = 4
 PROPERTY_RENT_MULTIPLIERS = [1, 2, 4, 7, 11]
+BANKRUPTCY_CREDITOR_BANK = "bank"
+BANKRUPTCY_CREDITOR_PLAYER = "player"
 
 rooms: dict[str, dict] = {}
 _rooms_lock = threading.Lock()
@@ -183,7 +187,19 @@ def _get_mortgage_value(cell: dict) -> int:
 
 
 def _get_unmortgage_cost(cell: dict) -> int:
-    return math.ceil(_get_mortgage_value(cell) * 1.1)
+    mortgage_value = _get_mortgage_value(cell)
+    return mortgage_value + math.ceil(mortgage_value / 10)
+
+
+def _collect_partial_payment(game: dict, debtor_id: str, creditor_id: str, amount: int) -> tuple[int, int]:
+    available_cash = max(game["cash"].get(debtor_id, 0), 0)
+    paid_now = min(available_cash, amount)
+
+    if paid_now > 0:
+        game["cash"][debtor_id] -= paid_now
+        game["cash"][creditor_id] += paid_now
+
+    return paid_now, amount - paid_now
 
 
 def _owns_full_color_group(game: dict, owner_id: str, position: int) -> bool:
@@ -232,7 +248,14 @@ def _calculate_rent(game: dict, owner_id: str, landed_position: int, roll_total:
     if cell_type == "property":
         base_rent = max(10, landed_cell["price"] // 10)
         level = min(_get_property_level(game, landed_position), MAX_PROPERTY_LEVEL)
-        return base_rent * PROPERTY_RENT_MULTIPLIERS[level]
+        rent = base_rent * PROPERTY_RENT_MULTIPLIERS[level]
+        if (
+            level == 0
+            and _owns_full_color_group(game, owner_id, landed_position)
+            and not _color_group_has_mortgaged_property(game, landed_position)
+        ):
+            rent *= 2
+        return rent
 
     if cell_type == "railroad":
         owned_railroads = _count_owned_cells_by_type(game, owner_id, "railroad")
@@ -266,8 +289,11 @@ def _create_game_state(room: dict) -> dict:
         "property_mortgaged": {},
         "in_jail": {player_id: False for player_id in player_ids},
         "doubles_streak": {player_id: 0 for player_id in player_ids},
+        "turns_in_jail": {player_id: 0 for player_id in player_ids},
         "pending_purchase": None,
         "pending_trade": None,
+        "pending_auction": None,
+        "pending_bankruptcy": None,
         "last_drawn_card": None,
         "winner_id": None,
         "last_landed_player_id": None,
@@ -301,7 +327,7 @@ def _resolve_card_destination(
     target_position: int,
     roll_total: int,
     effects: list[str],
-) -> tuple[bool, bool]:
+) -> tuple[bool, bool, dict | None]:
     game = room["game"]
     target_cell = _get_board_cell(target_position)
 
@@ -310,7 +336,7 @@ def _resolve_card_destination(
         game["doubles_streak"][player_id] = 0
         game["positions"][player_id] = JAIL_POSITION
         effects.append("The card sent you to Go To Jail, then on to Jail.")
-        return True, False
+        return True, False, None
 
     game["positions"][player_id] = target_position
 
@@ -321,8 +347,9 @@ def _resolve_card_destination(
             effects.append(f"Paid ${tax_amount} for {target_cell['name']}.")
 
     pending_purchase_created = False
+    bankruptcy_context = None
     if _is_buyable_cell(target_cell):
-        pending_purchase_created = _resolve_buyable_cell(
+        pending_purchase_created, bankruptcy_context = _resolve_buyable_cell(
             room,
             player_id,
             target_position,
@@ -330,7 +357,7 @@ def _resolve_card_destination(
             effects,
         )
 
-    return False, pending_purchase_created
+    return False, pending_purchase_created, bankruptcy_context
 
 
 def _draw_and_resolve_card(
@@ -340,7 +367,7 @@ def _draw_and_resolve_card(
     current_position: int,
     roll_total: int,
     effects: list[str],
-) -> tuple[bool, bool]:
+) -> tuple[bool, bool, dict | None]:
     game = room["game"]
     card = draw_card(cell_type)
     game["last_drawn_card"] = {
@@ -358,14 +385,14 @@ def _draw_and_resolve_card(
             effects.append(f"Collected ${amount} from the card.")
         else:
             effects.append(f"Paid ${abs(amount)} because of the card.")
-        return False, False
+        return False, False, None
 
     if effect_type == "go_to_jail":
         game["in_jail"][player_id] = True
         game["doubles_streak"][player_id] = 0
         game["positions"][player_id] = JAIL_POSITION
         effects.append("Moved directly to Jail because of the card.")
-        return True, False
+        return True, False, None
 
     if effect_type == "move_to":
         target_position = card["position"]
@@ -383,7 +410,7 @@ def _draw_and_resolve_card(
             effects,
         )
 
-    return False, False
+    return False, False, None
 
 
 def _resolve_landing(
@@ -391,7 +418,7 @@ def _resolve_landing(
     player_id: str,
     current_position: int,
     total: int,
-) -> tuple[int, bool, bool, list[str]]:
+) -> tuple[int, bool, bool, list[str], dict | None]:
     game = room["game"]
     effects: list[str] = []
     landed_position = (current_position + total) % BOARD_SIZE
@@ -407,7 +434,7 @@ def _resolve_landing(
         game["doubles_streak"][player_id] = 0
         game["positions"][player_id] = JAIL_POSITION
         effects.append("Landed on Go To Jail and moved directly to Jail.")
-        return landed_position, True, False, effects
+        return landed_position, True, False, effects, None
 
     game["positions"][player_id] = landed_position
 
@@ -418,7 +445,7 @@ def _resolve_landing(
             effects.append(f"Paid ${tax_amount} for {landed_cell['name']}.")
 
     if landed_cell["cell_type"] in {"chance", "community"}:
-        sent_to_jail, pending_purchase_created = _draw_and_resolve_card(
+        sent_to_jail, pending_purchase_created, bankruptcy_context = _draw_and_resolve_card(
             room,
             player_id,
             landed_cell["cell_type"],
@@ -426,9 +453,9 @@ def _resolve_landing(
             total,
             effects,
         )
-        return landed_position, sent_to_jail, pending_purchase_created, effects
+        return landed_position, sent_to_jail, pending_purchase_created, effects, bankruptcy_context
 
-    return landed_position, False, False, effects
+    return landed_position, False, False, effects, None
 
 
 def _resolve_buyable_cell(
@@ -437,12 +464,12 @@ def _resolve_buyable_cell(
     landed_position: int,
     roll_total: int,
     effects: list[str],
-) -> bool:
+) -> tuple[bool, dict | None]:
     game = room["game"]
     landed_cell = _get_board_cell(landed_position)
 
     if not _is_buyable_cell(landed_cell):
-        return False
+        return False, None
 
     owner_id = game["property_owners"].get(landed_position)
 
@@ -451,7 +478,7 @@ def _resolve_buyable_cell(
 
         if game["cash"][player_id] < price:
             effects.append(f"You cannot afford {landed_cell['name']} for ${price}.")
-            return False
+            return False, None
 
         game["pending_purchase"] = {
             "player_id": player_id,
@@ -461,7 +488,7 @@ def _resolve_buyable_cell(
             "cell_type": landed_cell["cell_type"],
         }
         effects.append(f"You can buy {landed_cell['name']} for ${price}.")
-        return True
+        return True, None
 
     if owner_id == player_id:
         if game["property_mortgaged"].get(landed_position, False):
@@ -472,13 +499,32 @@ def _resolve_buyable_cell(
         owner_name = _get_player_name(room, owner_id)
         if game["property_mortgaged"].get(landed_position, False):
             effects.append(f"{landed_cell['name']} is mortgaged, so no rent is due.")
-            return False
+            return False, None
         rent = _calculate_rent(game, owner_id, landed_position, roll_total)
-        game["cash"][player_id] -= rent
-        game["cash"][owner_id] += rent
-        effects.append(f"Paid ${rent} rent to {owner_name} for {landed_cell['name']}.")
+        if game["cash"][player_id] >= rent:
+            game["cash"][player_id] -= rent
+            game["cash"][owner_id] += rent
+            effects.append(f"Paid ${rent} rent to {owner_name} for {landed_cell['name']}.")
+        else:
+            paid_now, remaining_owed = _collect_partial_payment(game, player_id, owner_id, rent)
+            if paid_now > 0:
+                effects.append(
+                    f"Paid ${paid_now} rent to {owner_name} for {landed_cell['name']}, but still owe ${remaining_owed}."
+                )
+            else:
+                effects.append(
+                    f"Could not pay the ${rent} rent to {owner_name} for {landed_cell['name']}."
+                )
+            return (
+                False,
+                {
+                    "amount_owed": remaining_owed,
+                    "creditor_type": BANKRUPTCY_CREDITOR_PLAYER,
+                    "creditor_player_id": owner_id,
+                },
+            )
 
-    return False
+    return False, None
 
 
 def _resume_turn_after_purchase(room: dict, player_id: str) -> None:
@@ -493,18 +539,281 @@ def _resume_turn_after_purchase(room: dict, player_id: str) -> None:
     turn["can_roll"] = True
 
 
-def _handle_bankruptcy(room: dict, player: dict) -> bool:
+def _build_auction_order(room: dict, initiator_player_id: str) -> list[str]:
+    game = room["game"]
+    ordered_player_ids = [
+        player["player_id"]
+        for player in room["players"]
+        if game["cash"].get(player["player_id"], 0) > 0
+    ]
+
+    if initiator_player_id not in ordered_player_ids:
+        return ordered_player_ids
+
+    initiator_index = ordered_player_ids.index(initiator_player_id)
+    return (
+        ordered_player_ids[initiator_index + 1 :]
+        + ordered_player_ids[: initiator_index + 1]
+    )
+
+
+def _get_active_auction_player_ids(auction: dict) -> list[str]:
+    passed_player_ids = set(auction.get("passed_player_ids", []))
+    return [
+        player_id
+        for player_id in auction["eligible_player_ids"]
+        if player_id not in passed_player_ids
+    ]
+
+
+def _get_next_auction_player_id(auction: dict, current_player_id: str | None) -> str | None:
+    active_player_ids = _get_active_auction_player_ids(auction)
+
+    if not active_player_ids:
+        return None
+
+    if current_player_id is None or current_player_id not in auction["eligible_player_ids"]:
+        return active_player_ids[0]
+
+    current_index = auction["eligible_player_ids"].index(current_player_id)
+    total_players = len(auction["eligible_player_ids"])
+
+    for offset in range(1, total_players + 1):
+        candidate = auction["eligible_player_ids"][(current_index + offset) % total_players]
+
+        if candidate in active_player_ids:
+            return candidate
+
+    return active_player_ids[0]
+
+
+def _start_auction(
+    room: dict,
+    initiator_player_id: str,
+    position: int,
+    effects: list[str],
+) -> bool:
+    game = room["game"]
+    cell = _get_board_cell(position)
+
+    if not _is_buyable_cell(cell) or game["property_owners"].get(position) is not None:
+        return False
+
+    if game.get("pending_auction") is not None:
+        return False
+
+    eligible_player_ids = _build_auction_order(room, initiator_player_id)
+
+    if not eligible_player_ids:
+        effects.append(f"No players have enough cash to start an auction for {cell['name']}.")
+        return False
+
+    active_player_id = eligible_player_ids[0]
+    game["pending_auction"] = {
+        "initiator_player_id": initiator_player_id,
+        "active_player_id": active_player_id,
+        "highest_bidder_id": None,
+        "position": position,
+        "cell_name": cell["name"],
+        "cell_type": cell["cell_type"],
+        "price": cell["price"],
+        "current_bid": 0,
+        "eligible_player_ids": eligible_player_ids,
+        "passed_player_ids": [],
+    }
+    effects.append(f"Auction started for {cell['name']}.")
+    effects.append(f"{_get_player_name(room, active_player_id)} bids first.")
+    return True
+
+
+def _finalize_auction(room: dict, auction: dict) -> None:
+    game = room["game"]
+    position = auction["position"]
+    cell = _get_board_cell(position)
+    highest_bidder_id = auction.get("highest_bidder_id")
+    current_bid = auction["current_bid"]
+
+    if highest_bidder_id is not None and current_bid > 0:
+        winner_name = _get_player_name(room, highest_bidder_id)
+        game["cash"][highest_bidder_id] -= current_bid
+        game["property_owners"][position] = highest_bidder_id
+        game["property_mortgaged"][position] = False
+        game["last_effects"].append(
+            f"{winner_name} won the auction for {cell['name']} at ${current_bid}."
+        )
+
+        if (
+            cell["cell_type"] == "property"
+            and _owns_full_color_group(game, highest_bidder_id, position)
+            and not _color_group_has_mortgaged_property(game, position)
+        ):
+            game["last_effects"].append(
+                f"{winner_name} completed the {cell['color_group'].replace('_', ' ')} set. Upgrades unlocked."
+            )
+    else:
+        game["last_effects"].append(f"No one bought {cell['name']} in the auction.")
+
+    game["pending_auction"] = None
+    _resume_turn_after_purchase(room, auction["initiator_player_id"])
+
+
+def _start_bankruptcy_recovery(
+    room: dict,
+    player: dict,
+    resume_player_id: str,
+    amount_owed: int | None = None,
+    creditor_type: str = BANKRUPTCY_CREDITOR_BANK,
+    creditor_player_id: str | None = None,
+) -> bool:
     game = room["game"]
     player_id = player["player_id"]
 
-    if game["cash"].get(player_id, 0) >= 0:
+    if amount_owed is None:
+        amount_owed = abs(min(game["cash"].get(player_id, 0), 0))
+
+    if amount_owed <= 0:
         return False
 
-    game["last_effects"].append(f"{player['nickname']} went bankrupt and was eliminated.")
     game["pending_purchase"] = None
     game["pending_trade"] = None
-    game["turn"]["is_doubles"] = False
+    game["pending_auction"] = None
+    game["pending_bankruptcy"] = {
+        "player_id": player_id,
+        "amount_owed": amount_owed,
+        "resume_player_id": resume_player_id,
+        "creditor_type": creditor_type,
+        "creditor_player_id": creditor_player_id,
+    }
+    game["turn"]["current_player_id"] = player_id
+    game["turn"]["can_roll"] = False
     game["turn"]["turn_number"] += 1
+    if creditor_type == BANKRUPTCY_CREDITOR_PLAYER and creditor_player_id is not None:
+        creditor_name = _get_player_name(room, creditor_player_id)
+        game["last_effects"].append(
+            f"{player['nickname']} must recover ${amount_owed} owed to {creditor_name} or declare bankruptcy."
+        )
+    else:
+        game["last_effects"].append(
+            f"{player['nickname']} must recover ${amount_owed} or declare bankruptcy."
+        )
+    _touch_room(room)
+    return True
+
+
+def _start_bankruptcy_recovery_from_context(
+    room: dict,
+    player: dict,
+    resume_player_id: str,
+    bankruptcy_context: dict | None,
+) -> bool:
+    if bankruptcy_context is None:
+        return _start_bankruptcy_recovery(room, player, resume_player_id)
+
+    return _start_bankruptcy_recovery(
+        room,
+        player,
+        resume_player_id,
+        amount_owed=bankruptcy_context["amount_owed"],
+        creditor_type=bankruptcy_context.get("creditor_type", BANKRUPTCY_CREDITOR_BANK),
+        creditor_player_id=bankruptcy_context.get("creditor_player_id"),
+    )
+
+
+def _transfer_bankrupt_assets_to_creditor(
+    room: dict, debtor_id: str, creditor_player_id: str
+) -> tuple[int, int, int]:
+    game = room["game"]
+
+    if creditor_player_id == debtor_id or creditor_player_id not in game["cash"]:
+        return 0, 0, 0
+
+    transferred_cash = max(game["cash"].get(debtor_id, 0), 0)
+    if transferred_cash > 0:
+        game["cash"][debtor_id] -= transferred_cash
+        game["cash"][creditor_player_id] += transferred_cash
+
+    transferred_positions = 0
+    transferred_mortgaged_positions = 0
+    for position, owner_id in list(game["property_owners"].items()):
+        if owner_id == debtor_id:
+            game["property_owners"][position] = creditor_player_id
+            transferred_positions += 1
+            if game["property_mortgaged"].get(position, False):
+                transferred_mortgaged_positions += 1
+
+    return transferred_cash, transferred_positions, transferred_mortgaged_positions
+
+
+def _liquidate_bankrupt_upgrades(game: dict, player_id: str) -> tuple[int, int]:
+    liquidated_upgrades = 0
+    liquidation_cash = 0
+
+    for position, owner_id in list(game["property_owners"].items()):
+        if owner_id != player_id:
+            continue
+
+        current_level = game["property_levels"].get(position, 0)
+        if current_level <= 0:
+            continue
+
+        cell = _get_board_cell(position)
+        liquidation_cash += _get_upgrade_sell_value(cell) * current_level
+        liquidated_upgrades += current_level
+        game["property_levels"].pop(position, None)
+
+    if liquidation_cash > 0:
+        game["cash"][player_id] += liquidation_cash
+
+    return liquidated_upgrades, liquidation_cash
+
+
+def _eliminate_bankrupt_player(
+    room: dict, player: dict, message: str, pending_bankruptcy: dict | None = None
+) -> None:
+    game = room["game"]
+    player_id = player["player_id"]
+    creditor_player_id = None
+
+    if pending_bankruptcy and pending_bankruptcy.get("creditor_type") == BANKRUPTCY_CREDITOR_PLAYER:
+        creditor_player_id = pending_bankruptcy.get("creditor_player_id")
+
+    transferred_cash = 0
+    transferred_positions = 0
+    transferred_mortgaged_positions = 0
+    liquidated_upgrades, liquidation_cash = _liquidate_bankrupt_upgrades(game, player_id)
+    if creditor_player_id is not None:
+        (
+            transferred_cash,
+            transferred_positions,
+            transferred_mortgaged_positions,
+        ) = _transfer_bankrupt_assets_to_creditor(
+            room, player_id, creditor_player_id
+        )
+
+    game["last_effects"] = [message]
+    if liquidation_cash > 0:
+        game["last_effects"].append(
+            f"Sold {liquidated_upgrades} upgrades back to the bank for ${liquidation_cash} before bankruptcy transfer."
+        )
+    if creditor_player_id is not None and (transferred_cash > 0 or transferred_positions > 0):
+        transfer_parts: list[str] = []
+        if transferred_cash > 0:
+            transfer_parts.append(f"${transferred_cash} cash")
+        if transferred_positions > 0:
+            transfer_parts.append(f"{transferred_positions} properties")
+        game["last_effects"].append(
+            f"{_get_player_name(room, creditor_player_id)} collected {' and '.join(transfer_parts)} from the bankruptcy."
+        )
+    if creditor_player_id is not None and transferred_mortgaged_positions > 0:
+        property_word = "property" if transferred_mortgaged_positions == 1 else "properties"
+        game["last_effects"].append(
+            f"{_get_player_name(room, creditor_player_id)} received {transferred_mortgaged_positions} mortgaged {property_word}. They stay mortgaged until unmortgaged."
+        )
+    game["pending_purchase"] = None
+    game["pending_trade"] = None
+    game["pending_auction"] = None
+    game["pending_bankruptcy"] = None
+    game["turn"]["is_doubles"] = False
 
     room["players"] = [
         existing_player
@@ -524,6 +833,53 @@ def _handle_bankruptcy(room: dict, player: dict) -> bool:
         game["last_effects"].append(f"{winner['nickname']} wins the game.")
 
     _touch_room(room)
+
+
+def _sync_pending_bankruptcy(room: dict, player_id: str) -> bool:
+    game = room["game"]
+    pending_bankruptcy = game.get("pending_bankruptcy")
+
+    if pending_bankruptcy is None or pending_bankruptcy["player_id"] != player_id:
+        return False
+
+    creditor_type = pending_bankruptcy.get("creditor_type", BANKRUPTCY_CREDITOR_BANK)
+    creditor_player_id = pending_bankruptcy.get("creditor_player_id")
+
+    if creditor_type == BANKRUPTCY_CREDITOR_PLAYER and creditor_player_id is not None:
+        amount_owed = pending_bankruptcy["amount_owed"]
+        if game["cash"].get(player_id, 0) < amount_owed:
+            game["last_effects"].append(
+                f"Still owe ${amount_owed} to {_get_player_name(room, creditor_player_id)} to avoid bankruptcy."
+            )
+            return False
+
+        game["cash"][player_id] -= amount_owed
+        if creditor_player_id in game["cash"]:
+            game["cash"][creditor_player_id] += amount_owed
+            game["last_effects"].append(
+                f"Paid ${amount_owed} to {_get_player_name(room, creditor_player_id)}."
+            )
+    elif game["cash"].get(player_id, 0) < 0:
+        pending_bankruptcy["amount_owed"] = abs(game["cash"][player_id])
+        game["last_effects"].append(
+            f"Still owe ${pending_bankruptcy['amount_owed']} to avoid bankruptcy."
+        )
+        return False
+
+    resume_player_id = pending_bankruptcy["resume_player_id"]
+    game["pending_bankruptcy"] = None
+    game["turn"]["current_player_id"] = resume_player_id
+    game["turn"]["can_roll"] = True
+    if resume_player_id != player_id:
+        game["turn"]["is_doubles"] = False
+
+    if resume_player_id == player_id:
+        game["last_effects"].append("Debt recovered. Your turn continues.")
+    else:
+        game["last_effects"].append(
+            f"Debt recovered. {_get_player_name(room, resume_player_id)} is next."
+        )
+
     return True
 
 
@@ -567,6 +923,7 @@ def _remove_player_from_game_state(room: dict, leaving_player_id: str) -> None:
     }
     game["in_jail"].pop(leaving_player_id, None)
     game["doubles_streak"].pop(leaving_player_id, None)
+    game["turns_in_jail"].pop(leaving_player_id, None)
 
     pending_purchase = game.get("pending_purchase")
     if pending_purchase and pending_purchase["player_id"] == leaving_player_id:
@@ -578,6 +935,75 @@ def _remove_player_from_game_state(room: dict, leaving_player_id: str) -> None:
         pending_trade["receiver_id"],
     }:
         game["pending_trade"] = None
+
+    pending_auction = game.get("pending_auction")
+    if pending_auction:
+        passed_ids = set(pending_auction.get("passed_player_ids", []))
+        is_critical = leaving_player_id in {
+            pending_auction["initiator_player_id"],
+            pending_auction["active_player_id"],
+            pending_auction.get("highest_bidder_id"),
+        }
+        in_auction = leaving_player_id in pending_auction["eligible_player_ids"]
+        already_passed = leaving_player_id in passed_ids
+
+        if in_auction and already_passed and not is_critical:
+            # Player already passed — just remove them, auction continues
+            pending_auction["eligible_player_ids"] = [
+                pid for pid in pending_auction["eligible_player_ids"]
+                if pid != leaving_player_id
+            ]
+            pending_auction["passed_player_ids"] = [
+                pid for pid in passed_ids
+                if pid != leaving_player_id
+            ]
+            active_ids = _get_active_auction_player_ids(pending_auction)
+            highest_bidder_id = pending_auction.get("highest_bidder_id")
+            if not active_ids or (
+                highest_bidder_id is not None
+                and len(active_ids) == 1
+                and active_ids[0] == highest_bidder_id
+            ):
+                _finalize_auction(room, pending_auction)
+        elif is_critical or in_auction:
+            game["pending_auction"] = None
+            initiator_player_id = pending_auction["initiator_player_id"]
+
+            if initiator_player_id in remaining_player_ids and not turn["can_roll"]:
+                game["last_effects"] = ["Auction was cancelled because a player left the room."]
+                _resume_turn_after_purchase(room, initiator_player_id)
+
+    pending_bankruptcy = game.get("pending_bankruptcy")
+    if pending_bankruptcy:
+        if pending_bankruptcy["player_id"] == leaving_player_id:
+            # The debtor left — cancel recovery, resume for whoever was next.
+            game["pending_bankruptcy"] = None
+            resume_id = pending_bankruptcy["resume_player_id"]
+            if resume_id in remaining_player_ids:
+                turn["current_player_id"] = resume_id
+                turn["can_roll"] = True
+        elif pending_bankruptcy["resume_player_id"] == leaving_player_id:
+            # The player who was supposed to get the turn after recovery left —
+            # redirect to the next player after the debtor in turn order.
+            debtor_id = pending_bankruptcy["player_id"]
+            all_ids = list(game["positions"].keys())
+            next_remaining = remaining_player_ids[0] if remaining_player_ids else None
+            if debtor_id in all_ids:
+                debtor_index = all_ids.index(debtor_id)
+                for i in range(1, len(all_ids)):
+                    candidate = all_ids[(debtor_index + i) % len(all_ids)]
+                    if candidate in remaining_player_ids:
+                        next_remaining = candidate
+                        break
+            if next_remaining:
+                pending_bankruptcy["resume_player_id"] = next_remaining
+
+        if game.get("pending_bankruptcy") and pending_bankruptcy.get("creditor_player_id") == leaving_player_id:
+            debtor_id = pending_bankruptcy["player_id"]
+            game["cash"][debtor_id] -= pending_bankruptcy["amount_owed"]
+            pending_bankruptcy["amount_owed"] = abs(min(game["cash"][debtor_id], 0))
+            pending_bankruptcy["creditor_type"] = BANKRUPTCY_CREDITOR_BANK
+            pending_bankruptcy["creditor_player_id"] = None
 
 
 def _build_action_response(player: dict, room: dict) -> dict:
@@ -739,11 +1165,20 @@ def roll_dice(room_code: str, player_token: str) -> dict:
         if turn["current_player_id"] != player["player_id"]:
             raise HTTPException(status_code=403, detail="It is not your turn.")
 
+        if game["pending_auction"] is not None:
+            raise HTTPException(status_code=400, detail="Resolve the pending auction before rolling.")
+
         if not turn["can_roll"]:
             raise HTTPException(status_code=400, detail="You already rolled this turn.")
 
         if game["pending_trade"] is not None:
             raise HTTPException(status_code=400, detail="Resolve the pending trade before rolling.")
+
+        if game.get("pending_bankruptcy") is not None:
+            raise HTTPException(
+                status_code=400,
+                detail="Resolve the pending bankruptcy before rolling.",
+            )
 
         game["last_effects"] = []
         game["pending_purchase"] = None
@@ -766,7 +1201,14 @@ def roll_dice(room_code: str, player_token: str) -> dict:
             if is_doubles:
                 game["in_jail"][player_id] = False
                 game["doubles_streak"][player_id] = 0
-                landed_position, sent_to_jail, pending_purchase_created, effects = _resolve_landing(
+                game["turns_in_jail"][player_id] = 0
+                (
+                    landed_position,
+                    sent_to_jail,
+                    pending_purchase_created,
+                    effects,
+                    bankruptcy_context,
+                ) = _resolve_landing(
                     room,
                     player_id,
                     game["positions"][player_id],
@@ -776,11 +1218,25 @@ def roll_dice(room_code: str, player_token: str) -> dict:
                 _set_last_resolution(game, player_id, landed_position, effects)
 
                 if not sent_to_jail and not pending_purchase_created:
-                    pending_purchase_created = _resolve_buyable_cell(
+                    pending_purchase_created, bankruptcy_context = _resolve_buyable_cell(
                         room,
                         player_id,
                         landed_position,
                         total,
+                        game["last_effects"],
+                    )
+
+                if _start_bankruptcy_recovery_from_context(
+                    room, player, next_player_id, bankruptcy_context
+                ):
+                    return _build_action_response(player, room)
+
+                auction_started = False
+                if not sent_to_jail and not pending_purchase_created:
+                    auction_started = _start_auction(
+                        room,
+                        player_id,
+                        game["positions"][player_id],
                         game["last_effects"],
                     )
 
@@ -794,18 +1250,89 @@ def roll_dice(room_code: str, player_token: str) -> dict:
                     _touch_room(room)
                     return _build_action_response(player, room)
 
-                if _handle_bankruptcy(room, player):
+                if auction_started:
+                    turn["is_doubles"] = False
+                    turn["current_player_id"] = player_id
+                    turn["can_roll"] = False
+                    turn["turn_number"] += 1
+                    _touch_room(room)
                     return _build_action_response(player, room)
-
                 turn["current_player_id"] = next_player_id
             else:
-                _set_last_resolution(
-                    game,
-                    player_id,
-                    game["positions"][player_id],
-                    ["Stayed in Jail after failing to roll doubles."],
-                )
-                turn["current_player_id"] = next_player_id
+                game["turns_in_jail"][player_id] += 1
+                turns_used = game["turns_in_jail"][player_id]
+
+                if turns_used >= MAX_JAIL_TURNS:
+                    # Third failed attempt — must pay fine and move with this roll
+                    # No cash check here — if player can't afford the fine they go bankrupt.
+                    # This matches standard Monopoly rules: on the 3rd failed roll the fine
+                    # is mandatory and the player must move regardless of cash.
+                    game["cash"][player_id] -= JAIL_FINE_AMOUNT
+                    game["in_jail"][player_id] = False
+                    game["turns_in_jail"][player_id] = 0
+                    game["last_drawn_card"] = None
+                    (
+                        landed_position,
+                        sent_to_jail,
+                        pending_purchase_created,
+                        effects,
+                        bankruptcy_context,
+                    ) = _resolve_landing(
+                        room,
+                        player_id,
+                        game["positions"][player_id],
+                        total,
+                    )
+                    effects.insert(0, f"Paid ${JAIL_FINE_AMOUNT} fine after {MAX_JAIL_TURNS} turns in Jail and moved with the roll.")
+                    _set_last_resolution(game, player_id, landed_position, effects)
+
+                    if not sent_to_jail and not pending_purchase_created:
+                        pending_purchase_created, bankruptcy_context = _resolve_buyable_cell(
+                            room,
+                            player_id,
+                            landed_position,
+                            total,
+                            game["last_effects"],
+                        )
+
+                    if _start_bankruptcy_recovery_from_context(
+                        room, player, next_player_id, bankruptcy_context
+                    ):
+                        return _build_action_response(player, room)
+
+                    auction_started = False
+                    if not sent_to_jail and not pending_purchase_created:
+                        auction_started = _start_auction(
+                            room,
+                            player_id,
+                            game["positions"][player_id],
+                            game["last_effects"],
+                        )
+
+                    if pending_purchase_created:
+                        turn["is_doubles"] = False
+                        turn["current_player_id"] = player_id
+                        turn["can_roll"] = False
+                        turn["turn_number"] += 1
+                        _touch_room(room)
+                        return _build_action_response(player, room)
+
+                    if auction_started:
+                        turn["is_doubles"] = False
+                        turn["current_player_id"] = player_id
+                        turn["can_roll"] = False
+                        turn["turn_number"] += 1
+                        _touch_room(room)
+                        return _build_action_response(player, room)
+                    turn["current_player_id"] = next_player_id
+                else:
+                    _set_last_resolution(
+                        game,
+                        player_id,
+                        game["positions"][player_id],
+                        [f"Stayed in Jail. Turn {turns_used}/3 without doubles."],
+                    )
+                    turn["current_player_id"] = next_player_id
 
             turn["turn_number"] += 1
             turn["can_roll"] = True
@@ -833,7 +1360,13 @@ def roll_dice(room_code: str, player_token: str) -> dict:
             _touch_room(room)
             return _build_action_response(player, room)
 
-        landed_position, sent_to_jail, pending_purchase_created, effects = _resolve_landing(
+        (
+            landed_position,
+            sent_to_jail,
+            pending_purchase_created,
+            effects,
+            bankruptcy_context,
+        ) = _resolve_landing(
             room,
             player_id,
             game["positions"][player_id],
@@ -842,7 +1375,7 @@ def roll_dice(room_code: str, player_token: str) -> dict:
         _set_last_resolution(game, player_id, landed_position, effects)
 
         if not sent_to_jail and not pending_purchase_created:
-            pending_purchase_created = _resolve_buyable_cell(
+            pending_purchase_created, bankruptcy_context = _resolve_buyable_cell(
                 room,
                 player_id,
                 landed_position,
@@ -850,8 +1383,20 @@ def roll_dice(room_code: str, player_token: str) -> dict:
                 game["last_effects"],
             )
 
-        if _handle_bankruptcy(room, player):
+        resume_player_id = player_id if is_doubles and not sent_to_jail else next_player_id
+        if _start_bankruptcy_recovery_from_context(
+            room, player, resume_player_id, bankruptcy_context
+        ):
             return _build_action_response(player, room)
+
+        auction_started = False
+        if not sent_to_jail and not pending_purchase_created:
+            auction_started = _start_auction(
+                room,
+                player_id,
+                game["positions"][player_id],
+                game["last_effects"],
+            )
 
         if sent_to_jail:
             if is_doubles:
@@ -865,6 +1410,14 @@ def roll_dice(room_code: str, player_token: str) -> dict:
             turn["turn_number"] += 1
             _touch_room(room)
             return _build_action_response(player, room)
+        elif auction_started:
+            if is_doubles:
+                game["last_effects"].append("Resolve the auction first to use your extra turn.")
+            turn["current_player_id"] = player_id
+            turn["can_roll"] = False
+            turn["turn_number"] += 1
+            _touch_room(room)
+            return _build_action_response(player, room)
         elif is_doubles:
             game["last_effects"].append("Rolled doubles, so you take another turn.")
         else:
@@ -873,6 +1426,111 @@ def roll_dice(room_code: str, player_token: str) -> dict:
         turn["turn_number"] += 1
         turn["can_roll"] = True
         _touch_room(room)
+
+    return _build_action_response(player, room)
+
+
+def pay_jail_fine(room_code: str, player_token: str) -> dict:
+    normalized_room_code = _normalize_room_code(room_code)
+
+    with _rooms_lock:
+        room = _find_room_or_raise(normalized_room_code)
+
+        if room["status"] != ROOM_STATUS_IN_GAME or room.get("game") is None:
+            raise HTTPException(status_code=400, detail="Game has not started yet.")
+
+        player = _find_player_by_token(room, player_token)
+        game = room["game"]
+        turn = game["turn"]
+        player_id = player["player_id"]
+        pending_bankruptcy = game.get("pending_bankruptcy")
+        is_bankruptcy_recovery = (
+            pending_bankruptcy is not None and pending_bankruptcy["player_id"] == player_id
+        )
+
+        if turn["current_player_id"] != player_id:
+            raise HTTPException(status_code=403, detail="It is not your turn.")
+
+        if game.get("pending_bankruptcy") is not None:
+            raise HTTPException(
+                status_code=400,
+                detail="Resolve the pending bankruptcy before paying the jail fine.",
+            )
+
+        if not turn["can_roll"]:
+            raise HTTPException(
+                status_code=400,
+                detail="You can only pay the jail fine before rolling this turn.",
+            )
+
+        if game["pending_purchase"] is not None:
+            raise HTTPException(
+                status_code=400,
+                detail="Resolve the pending purchase before paying the jail fine.",
+            )
+
+        if game["pending_trade"] is not None:
+            raise HTTPException(
+                status_code=400,
+                detail="Resolve the pending trade before paying the jail fine.",
+            )
+
+        if game["pending_auction"] is not None:
+            raise HTTPException(
+                status_code=400,
+                detail="Resolve the pending auction before paying the jail fine.",
+            )
+
+        if not game["in_jail"].get(player_id, False):
+            raise HTTPException(status_code=400, detail="You are not in jail.")
+
+        if game["cash"][player_id] < JAIL_FINE_AMOUNT:
+            raise HTTPException(
+                status_code=400,
+                detail="You do not have enough cash to pay the jail fine.",
+            )
+
+        game["cash"][player_id] -= JAIL_FINE_AMOUNT
+        game["in_jail"][player_id] = False
+        game["turns_in_jail"][player_id] = 0
+        game["last_drawn_card"] = None
+        game["last_effects"] = [
+            f"Paid ${JAIL_FINE_AMOUNT} to leave Jail before rolling.",
+        ]
+        _touch_room(room)
+
+    return _build_action_response(player, room)
+
+
+def _require_pending_bankruptcy(room: dict, player_token: str) -> tuple[dict, dict, dict]:
+    if room["status"] != ROOM_STATUS_IN_GAME or room.get("game") is None:
+        raise HTTPException(status_code=400, detail="Game has not started yet.")
+
+    player = _find_player_by_token(room, player_token)
+    game = room["game"]
+    pending_bankruptcy = game.get("pending_bankruptcy")
+
+    if pending_bankruptcy is None:
+        raise HTTPException(status_code=400, detail="There is no bankruptcy recovery in progress.")
+
+    if pending_bankruptcy["player_id"] != player["player_id"]:
+        raise HTTPException(status_code=403, detail="You are not the player in bankruptcy recovery.")
+
+    return player, game, pending_bankruptcy
+
+
+def declare_bankruptcy(room_code: str, player_token: str) -> dict:
+    normalized_room_code = _normalize_room_code(room_code)
+
+    with _rooms_lock:
+        room = _find_room_or_raise(normalized_room_code)
+        player, _, pending_bankruptcy = _require_pending_bankruptcy(room, player_token)
+        _eliminate_bankrupt_player(
+            room,
+            player,
+            f"{player['nickname']} declared bankruptcy and was eliminated.",
+            pending_bankruptcy=pending_bankruptcy,
+        )
 
     return _build_action_response(player, room)
 
@@ -892,6 +1550,26 @@ def _require_pending_purchase(room: dict, player_token: str) -> tuple[dict, dict
         raise HTTPException(status_code=403, detail="Only the active player can resolve this purchase.")
 
     return player, game, pending_purchase
+
+
+def _require_pending_auction(room: dict, player_token: str) -> tuple[dict, dict, dict]:
+    if room["status"] != ROOM_STATUS_IN_GAME or room.get("game") is None:
+        raise HTTPException(status_code=400, detail="Game has not started yet.")
+
+    player = _find_player_by_token(room, player_token)
+    game = room["game"]
+    pending_auction = game.get("pending_auction")
+
+    if pending_auction is None:
+        raise HTTPException(status_code=400, detail="There is no auction waiting to be resolved.")
+
+    if player["player_id"] not in pending_auction["eligible_player_ids"]:
+        raise HTTPException(status_code=403, detail="You are not part of this auction.")
+
+    if player["player_id"] in pending_auction.get("passed_player_ids", []):
+        raise HTTPException(status_code=403, detail="You have already passed in this auction.")
+
+    return player, game, pending_auction
 
 
 def buy_property(room_code: str, player_token: str) -> dict:
@@ -923,7 +1601,10 @@ def buy_property(room_code: str, player_token: str) -> dict:
         game["pending_purchase"] = None
         game["last_effects"].append(f"Bought {cell['name']} for ${price}.")
 
-        if _owns_full_color_group(game, player_id, position):
+        if (
+            _owns_full_color_group(game, player_id, position)
+            and not _color_group_has_mortgaged_property(game, position)
+        ):
             game["last_effects"].append(
                 f"Completed the {cell['color_group'].replace('_', ' ')} set. Upgrades unlocked."
             )
@@ -941,11 +1622,103 @@ def skip_property_purchase(room_code: str, player_token: str) -> dict:
         room = _find_room_or_raise(normalized_room_code)
         player, game, pending_purchase = _require_pending_purchase(room, player_token)
         player_id = player["player_id"]
-        cell = _get_board_cell(pending_purchase["position"])
+        position = pending_purchase["position"]
+        cell = _get_board_cell(position)
 
         game["pending_purchase"] = None
         game["last_effects"].append(f"Passed on buying {cell['name']}.")
+
+        if _start_auction(room, player_id, position, game["last_effects"]):
+            _touch_room(room)
+            return _build_action_response(player, room)
+
         _resume_turn_after_purchase(room, player_id)
+        _touch_room(room)
+
+    return _build_action_response(player, room)
+
+
+def bid_in_auction(room_code: str, player_token: str, amount: int) -> dict:
+    normalized_room_code = _normalize_room_code(room_code)
+
+    with _rooms_lock:
+        room = _find_room_or_raise(normalized_room_code)
+        player, game, pending_auction = _require_pending_auction(room, player_token)
+        player_id = player["player_id"]
+
+        if pending_auction["active_player_id"] != player_id:
+            raise HTTPException(status_code=403, detail="It is not your turn to bid.")
+
+        minimum_bid = pending_auction["current_bid"] + 1
+
+        if amount < minimum_bid:
+            raise HTTPException(status_code=400, detail=f"Bid must be at least ${minimum_bid}.")
+
+        if game["cash"].get(player_id, 0) < amount:
+            raise HTTPException(
+                status_code=400,
+                detail="You do not have enough cash for that bid.",
+            )
+
+        cell = _get_board_cell(pending_auction["position"])
+        pending_auction["current_bid"] = amount
+        pending_auction["highest_bidder_id"] = player_id
+        game["last_effects"] = [f"{player['nickname']} bid ${amount} for {cell['name']}."]
+
+        active_player_ids = _get_active_auction_player_ids(pending_auction)
+        if len(active_player_ids) == 1 and active_player_ids[0] == player_id:
+            _finalize_auction(room, pending_auction)
+        else:
+            next_player_id = _get_next_auction_player_id(pending_auction, player_id)
+
+            if next_player_id is None:
+                _finalize_auction(room, pending_auction)
+            else:
+                pending_auction["active_player_id"] = next_player_id
+                game["last_effects"].append(
+                    f"{_get_player_name(room, next_player_id)} is next in the auction."
+                )
+
+        _touch_room(room)
+
+    return _build_action_response(player, room)
+
+
+def pass_auction(room_code: str, player_token: str) -> dict:
+    normalized_room_code = _normalize_room_code(room_code)
+
+    with _rooms_lock:
+        room = _find_room_or_raise(normalized_room_code)
+        player, game, pending_auction = _require_pending_auction(room, player_token)
+        player_id = player["player_id"]
+
+        if pending_auction["active_player_id"] != player_id:
+            raise HTTPException(status_code=403, detail="It is not your turn to act in the auction.")
+
+        cell = _get_board_cell(pending_auction["position"])
+        pending_auction["passed_player_ids"].append(player_id)
+        game["last_effects"] = [f"{player['nickname']} passed in the auction for {cell['name']}."]
+
+        active_player_ids = _get_active_auction_player_ids(pending_auction)
+        highest_bidder_id = pending_auction.get("highest_bidder_id")
+
+        if not active_player_ids or (
+            highest_bidder_id is not None
+            and len(active_player_ids) == 1
+            and active_player_ids[0] == highest_bidder_id
+        ):
+            _finalize_auction(room, pending_auction)
+        else:
+            next_player_id = _get_next_auction_player_id(pending_auction, player_id)
+
+            if next_player_id is None:
+                _finalize_auction(room, pending_auction)
+            else:
+                pending_auction["active_player_id"] = next_player_id
+                game["last_effects"].append(
+                    f"{_get_player_name(room, next_player_id)} is next in the auction."
+                )
+
         _touch_room(room)
 
     return _build_action_response(player, room)
@@ -986,6 +1759,12 @@ def upgrade_property(room_code: str, player_token: str, position: int) -> dict:
                 detail="Resolve the pending trade before upgrading properties.",
             )
 
+        if game["pending_auction"] is not None:
+            raise HTTPException(
+                status_code=400,
+                detail="Resolve the pending auction before upgrading properties.",
+            )
+
         if position < 0 or position >= BOARD_SIZE:
             raise HTTPException(status_code=400, detail="Invalid board position.")
 
@@ -1023,6 +1802,16 @@ def upgrade_property(room_code: str, player_token: str, position: int) -> dict:
                 detail="This property is already at the maximum upgrade level.",
             )
 
+        group_positions = PROPERTY_GROUPS.get(cell["color_group"], [])
+        other_positions = [pos for pos in group_positions if pos != position]
+        if other_positions:
+            min_other_level = min(_get_property_level(game, pos) for pos in other_positions)
+            if current_level > min_other_level:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Build evenly: upgrade another property in this group first.",
+                )
+
         upgrade_cost = _get_upgrade_cost(cell)
 
         if game["cash"][player_id] < upgrade_cost:
@@ -1058,11 +1847,15 @@ def sell_upgrade(room_code: str, player_token: str, position: int) -> dict:
         game = room["game"]
         turn = game["turn"]
         player_id = player["player_id"]
+        pending_bankruptcy = game.get("pending_bankruptcy")
+        is_bankruptcy_recovery = (
+            pending_bankruptcy is not None and pending_bankruptcy["player_id"] == player_id
+        )
 
         if turn["current_player_id"] != player_id:
             raise HTTPException(status_code=403, detail="It is not your turn.")
 
-        if not turn["can_roll"]:
+        if not turn["can_roll"] and not is_bankruptcy_recovery:
             raise HTTPException(
                 status_code=400,
                 detail="You can only sell upgrades before rolling this turn.",
@@ -1078,6 +1871,12 @@ def sell_upgrade(room_code: str, player_token: str, position: int) -> dict:
             raise HTTPException(
                 status_code=400,
                 detail="Resolve the pending trade before selling upgrades.",
+            )
+
+        if game["pending_auction"] is not None:
+            raise HTTPException(
+                status_code=400,
+                detail="Resolve the pending auction before selling upgrades.",
             )
 
         if position < 0 or position >= BOARD_SIZE:
@@ -1105,6 +1904,16 @@ def sell_upgrade(room_code: str, player_token: str, position: int) -> dict:
                 detail="This property has no upgrades to sell.",
             )
 
+        group_positions = PROPERTY_GROUPS.get(cell.get("color_group", ""), [])
+        other_positions = [pos for pos in group_positions if pos != position]
+        if other_positions:
+            max_other_level = max(_get_property_level(game, pos) for pos in other_positions)
+            if current_level < max_other_level:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Sell evenly: sell an upgrade from a higher-level property in this group first.",
+                )
+
         sell_value = _get_upgrade_sell_value(cell)
         new_level = current_level - 1
         game["cash"][player_id] += sell_value
@@ -1120,6 +1929,7 @@ def sell_upgrade(room_code: str, player_token: str, position: int) -> dict:
             f"Sold one upgrade on {cell['name']} for ${sell_value}.",
             f"Rent is now ${new_rent}.",
         ]
+        _sync_pending_bankruptcy(room, player_id)
         _touch_room(room)
 
     return _build_action_response(player, room)
@@ -1138,11 +1948,15 @@ def mortgage_property(room_code: str, player_token: str, position: int) -> dict:
         game = room["game"]
         turn = game["turn"]
         player_id = player["player_id"]
+        pending_bankruptcy = game.get("pending_bankruptcy")
+        is_bankruptcy_recovery = (
+            pending_bankruptcy is not None and pending_bankruptcy["player_id"] == player_id
+        )
 
         if turn["current_player_id"] != player_id:
             raise HTTPException(status_code=403, detail="It is not your turn.")
 
-        if not turn["can_roll"]:
+        if not turn["can_roll"] and not is_bankruptcy_recovery:
             raise HTTPException(
                 status_code=400,
                 detail="You can only manage mortgages before rolling this turn.",
@@ -1158,6 +1972,12 @@ def mortgage_property(room_code: str, player_token: str, position: int) -> dict:
             raise HTTPException(
                 status_code=400,
                 detail="Resolve the pending trade before managing mortgages.",
+            )
+
+        if game["pending_auction"] is not None:
+            raise HTTPException(
+                status_code=400,
+                detail="Resolve the pending auction before managing mortgages.",
             )
 
         cell = _get_board_cell(position)
@@ -1185,6 +2005,7 @@ def mortgage_property(room_code: str, player_token: str, position: int) -> dict:
         game["property_mortgaged"][position] = True
         game["last_drawn_card"] = None
         game["last_effects"] = [f"Mortgaged {cell['name']} for ${mortgage_value}."]
+        _sync_pending_bankruptcy(room, player_id)
         _touch_room(room)
 
     return _build_action_response(player, room)
@@ -1207,6 +2028,12 @@ def unmortgage_property(room_code: str, player_token: str, position: int) -> dic
         if turn["current_player_id"] != player_id:
             raise HTTPException(status_code=403, detail="It is not your turn.")
 
+        if game.get("pending_bankruptcy") is not None:
+            raise HTTPException(
+                status_code=400,
+                detail="Resolve the pending bankruptcy before unmortgaging properties.",
+            )
+
         if not turn["can_roll"]:
             raise HTTPException(
                 status_code=400,
@@ -1223,6 +2050,12 @@ def unmortgage_property(room_code: str, player_token: str, position: int) -> dic
             raise HTTPException(
                 status_code=400,
                 detail="Resolve the pending trade before managing mortgages.",
+            )
+
+        if game["pending_auction"] is not None:
+            raise HTTPException(
+                status_code=400,
+                detail="Resolve the pending auction before managing mortgages.",
             )
 
         cell = _get_board_cell(position)
@@ -1276,6 +2109,10 @@ def propose_trade(
         game = room["game"]
         turn = game["turn"]
         player_id = player["player_id"]
+        pending_bankruptcy = game.get("pending_bankruptcy")
+        is_bankruptcy_recovery = (
+            pending_bankruptcy is not None and pending_bankruptcy["player_id"] == player_id
+        )
 
         if target_player["player_id"] == player_id:
             raise HTTPException(status_code=400, detail="You cannot offer a trade to yourself.")
@@ -1283,10 +2120,10 @@ def propose_trade(
         if turn["current_player_id"] != player_id:
             raise HTTPException(status_code=403, detail="It is not your turn.")
 
-        if not turn["can_roll"]:
+        if not turn["can_roll"] and not is_bankruptcy_recovery:
             raise HTTPException(
                 status_code=400,
-                detail="You can only propose trades before rolling this turn.",
+                detail="You can only propose trades before rolling this turn or while recovering from bankruptcy.",
             )
 
         if game["pending_purchase"] is not None:
@@ -1299,6 +2136,12 @@ def propose_trade(
             raise HTTPException(
                 status_code=400,
                 detail="Resolve the current pending trade before proposing another one.",
+            )
+
+        if game["pending_auction"] is not None:
+            raise HTTPException(
+                status_code=400,
+                detail="Resolve the pending auction before proposing a trade.",
             )
 
         cell = _get_board_cell(position)
@@ -1412,11 +2255,16 @@ def respond_to_trade(room_code: str, player_token: str, accept: bool) -> dict:
             f"{receiver['nickname']} bought {cell['name']} from {proposer['nickname']} for ${cash_amount}.",
         ]
 
-        if cell["cell_type"] == "property" and _owns_full_color_group(game, receiver_id, position):
+        if (
+            cell["cell_type"] == "property"
+            and _owns_full_color_group(game, receiver_id, position)
+            and not _color_group_has_mortgaged_property(game, position)
+        ):
             game["last_effects"].append(
                 f"{receiver['nickname']} completed the {cell['color_group'].replace('_', ' ')} set."
             )
 
+        _sync_pending_bankruptcy(room, proposer_id)
         _touch_room(room)
 
     return _build_action_response(player, room)
