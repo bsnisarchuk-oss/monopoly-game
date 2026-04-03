@@ -174,6 +174,10 @@ def _get_upgrade_cost(cell: dict) -> int:
     return max(50, cell["price"] // 2)
 
 
+def _get_upgrade_sell_value(cell: dict) -> int:
+    return max(25, _get_upgrade_cost(cell) // 2)
+
+
 def _get_mortgage_value(cell: dict) -> int:
     return max(30, cell["price"] // 2)
 
@@ -1034,6 +1038,86 @@ def upgrade_property(room_code: str, player_token: str, position: int) -> dict:
         game["last_drawn_card"] = None
         game["last_effects"] = [
             f"Upgraded {cell['name']} to level {new_level} for ${upgrade_cost}.",
+            f"Rent is now ${new_rent}.",
+        ]
+        _touch_room(room)
+
+    return _build_action_response(player, room)
+
+
+def sell_upgrade(room_code: str, player_token: str, position: int) -> dict:
+    normalized_room_code = _normalize_room_code(room_code)
+
+    with _rooms_lock:
+        room = _find_room_or_raise(normalized_room_code)
+
+        if room["status"] != ROOM_STATUS_IN_GAME or room.get("game") is None:
+            raise HTTPException(status_code=400, detail="Game has not started yet.")
+
+        player = _find_player_by_token(room, player_token)
+        game = room["game"]
+        turn = game["turn"]
+        player_id = player["player_id"]
+
+        if turn["current_player_id"] != player_id:
+            raise HTTPException(status_code=403, detail="It is not your turn.")
+
+        if not turn["can_roll"]:
+            raise HTTPException(
+                status_code=400,
+                detail="You can only sell upgrades before rolling this turn.",
+            )
+
+        if game["pending_purchase"] is not None:
+            raise HTTPException(
+                status_code=400,
+                detail="Resolve the pending purchase before selling upgrades.",
+            )
+
+        if game["pending_trade"] is not None:
+            raise HTTPException(
+                status_code=400,
+                detail="Resolve the pending trade before selling upgrades.",
+            )
+
+        if position < 0 or position >= BOARD_SIZE:
+            raise HTTPException(status_code=400, detail="Invalid board position.")
+
+        cell = _get_board_cell(position)
+
+        if cell["cell_type"] != "property" or cell.get("price") is None:
+            raise HTTPException(
+                status_code=400,
+                detail="Only standard property cells can sell upgrades.",
+            )
+
+        if game["property_owners"].get(position) != player_id:
+            raise HTTPException(
+                status_code=403,
+                detail="You can only sell upgrades from properties that you own.",
+            )
+
+        current_level = _get_property_level(game, position)
+
+        if current_level <= 0:
+            raise HTTPException(
+                status_code=400,
+                detail="This property has no upgrades to sell.",
+            )
+
+        sell_value = _get_upgrade_sell_value(cell)
+        new_level = current_level - 1
+        game["cash"][player_id] += sell_value
+
+        if new_level == 0:
+            game["property_levels"].pop(position, None)
+        else:
+            game["property_levels"][position] = new_level
+
+        new_rent = _calculate_rent(game, player_id, position, 0)
+        game["last_drawn_card"] = None
+        game["last_effects"] = [
+            f"Sold one upgrade on {cell['name']} for ${sell_value}.",
             f"Rent is now ${new_rent}.",
         ]
         _touch_room(room)

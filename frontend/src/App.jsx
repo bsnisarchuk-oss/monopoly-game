@@ -63,6 +63,16 @@ function getUpgradeCost(cell) {
   return Math.max(50, Math.floor(cell.price / 2));
 }
 
+function getUpgradeSellValue(cell) {
+  const upgradeCost = getUpgradeCost(cell);
+
+  if (upgradeCost == null) {
+    return null;
+  }
+
+  return Math.max(25, Math.floor(upgradeCost / 2));
+}
+
 function getMortgageValue(cell) {
   if (!cell?.price) {
     return null;
@@ -286,6 +296,20 @@ function App() {
           }
 
           return (propertyLevels[cell.index] ?? 0) < MAX_PROPERTY_LEVEL;
+        });
+  const sellableProperties =
+    currentPlayer == null
+      ? []
+      : boardCells.filter((cell) => {
+          if (cell.cell_type !== "property") {
+            return false;
+          }
+
+          if (propertyOwners[cell.index] !== currentPlayer.player_id) {
+            return false;
+          }
+
+          return (propertyLevels[cell.index] ?? 0) > 0;
         });
 
   const canUsePreRollDesk =
@@ -957,6 +981,65 @@ function App() {
       const upgradedLevel = (data.room.game?.property_levels?.[position] ?? 0);
       setStatus(
         `You upgraded ${propertyCell.name} to level ${upgradedLevel} for $${upgradeCost}.`,
+      );
+    } catch (error) {
+      setStatus(error.message);
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
+  async function handleSellUpgradeProperty(position) {
+    if (!currentRoom || !playerToken) {
+      setStatus("Join the active game before selling upgrades.");
+      return;
+    }
+
+    const propertyCell = boardCells.find((cell) => cell.index === position) ?? null;
+    const sellValue = getUpgradeSellValue(propertyCell);
+
+    if (!propertyCell || sellValue == null) {
+      setStatus("That property upgrade cannot be sold.");
+      return;
+    }
+
+    setIsSubmitting(true);
+    setStatus(`Selling one upgrade on ${propertyCell.name}...`);
+
+    try {
+      const response = await fetch(
+        `${API_BASE_URL}/rooms/${currentRoom.room_code}/sell-upgrade`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            player_token: playerToken,
+            position,
+          }),
+        },
+      );
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.detail || "Sell upgrade failed.");
+      }
+
+      setPlayerId(data.player_id);
+      setPlayerToken(data.player_token);
+      setCurrentRoom(data.room);
+      saveStoredSession({
+        player_id: data.player_id,
+        player_token: data.player_token,
+        room_code: data.room.room_code,
+        nickname: currentPlayer?.nickname ?? nickname.trim(),
+      });
+
+      const downgradedLevel = data.room.game?.property_levels?.[position] ?? 0;
+      setStatus(
+        `You sold one upgrade on ${propertyCell.name} for $${sellValue}. Level is now ${downgradedLevel}.`,
       );
     } catch (error) {
       setStatus(error.message);
@@ -1716,54 +1799,98 @@ function App() {
                     </section>
                   )}
 
-                  {upgradeableProperties.length > 0 && (
+                  {(upgradeableProperties.length > 0 || sellableProperties.length > 0) && (
                     <section className="upgrade-card board-center-section">
-                      <h3>Property upgrades</h3>
+                      <h3>Property management</h3>
                       <p>
-                        Build before rolling when you control the full color group. This is our
-                        simplified houses system for the MVP.
+                        Build or sell upgrades before rolling. This is our simplified houses system
+                        for the MVP.
                       </p>
-                      <div className="upgrade-list">
-                        {upgradeableProperties.map((cell) => {
-                          const level = propertyLevels[cell.index] ?? 0;
-                          const nextLevel = level + 1;
-                          const upgradeCost = getUpgradeCost(cell);
-                          const currentRent = getRentHint(cell, level);
-                          const nextRent = getRentHint(cell, nextLevel);
+                      {upgradeableProperties.length > 0 && (
+                        <div className="upgrade-group">
+                          <h4>Build upgrades</h4>
+                          <div className="upgrade-list">
+                            {upgradeableProperties.map((cell) => {
+                              const level = propertyLevels[cell.index] ?? 0;
+                              const nextLevel = level + 1;
+                              const upgradeCost = getUpgradeCost(cell);
+                              const currentRent = getRentHint(cell, level);
+                              const nextRent = getRentHint(cell, nextLevel);
 
-                          return (
-                            <article key={cell.index} className="upgrade-option">
-                              <div>
-                                <h4>{cell.name}</h4>
-                                <p>
-                                  Group:{" "}
-                                  <strong>{formatCellType(cell.color_group ?? "property")}</strong>
-                                </p>
-                                <p>
-                                  Level <strong>{level}</strong> {"->"} <strong>{nextLevel}</strong>
-                                </p>
-                                <p>
-                                  {currentRent} {"->"} <strong>{nextRent}</strong>
-                                </p>
-                                <p>
-                                  Cost: <strong>${upgradeCost}</strong>
-                                </p>
-                              </div>
-                              <button
-                                type="button"
-                                className="upgrade-button"
-                                onClick={() => handleUpgradeProperty(cell.index)}
-                                disabled={isSubmitting || !canUpgradeProperties}
-                              >
-                                Upgrade
-                              </button>
-                            </article>
-                          );
-                        })}
-                      </div>
+                              return (
+                                <article key={cell.index} className="upgrade-option">
+                                  <div>
+                                    <h4>{cell.name}</h4>
+                                    <p>
+                                      Group:{" "}
+                                      <strong>{formatCellType(cell.color_group ?? "property")}</strong>
+                                    </p>
+                                    <p>
+                                      Level <strong>{level}</strong> {"->"} <strong>{nextLevel}</strong>
+                                    </p>
+                                    <p>
+                                      {currentRent} {"->"} <strong>{nextRent}</strong>
+                                    </p>
+                                    <p>
+                                      Cost: <strong>${upgradeCost}</strong>
+                                    </p>
+                                  </div>
+                                  <button
+                                    type="button"
+                                    className="upgrade-button"
+                                    onClick={() => handleUpgradeProperty(cell.index)}
+                                    disabled={isSubmitting || !canUpgradeProperties}
+                                  >
+                                    Upgrade
+                                  </button>
+                                </article>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
+                      {sellableProperties.length > 0 && (
+                        <div className="upgrade-group">
+                          <h4>Sell upgrades</h4>
+                          <div className="upgrade-list">
+                            {sellableProperties.map((cell) => {
+                              const level = propertyLevels[cell.index] ?? 0;
+                              const nextLevel = Math.max(0, level - 1);
+                              const sellValue = getUpgradeSellValue(cell);
+                              const currentRent = getRentHint(cell, level);
+                              const nextRent = getRentHint(cell, nextLevel);
+
+                              return (
+                                <article key={cell.index} className="upgrade-option sell-option">
+                                  <div>
+                                    <h4>{cell.name}</h4>
+                                    <p>
+                                      Level <strong>{level}</strong> {"->"} <strong>{nextLevel}</strong>
+                                    </p>
+                                    <p>
+                                      {currentRent} {"->"} <strong>{nextRent}</strong>
+                                    </p>
+                                    <p>
+                                      Cash back: <strong>${sellValue}</strong>
+                                    </p>
+                                  </div>
+                                  <button
+                                    type="button"
+                                    className="sell-button"
+                                    onClick={() => handleSellUpgradeProperty(cell.index)}
+                                    disabled={isSubmitting || !canUpgradeProperties}
+                                  >
+                                    Sell upgrade
+                                  </button>
+                                </article>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
                       {!canUpgradeProperties && (
                         <p className="upgrade-note">
-                          Upgrades are only available at the start of your own turn, before you roll.
+                          Upgrade changes are only available at the start of your own turn, before you roll.
                         </p>
                       )}
                     </section>

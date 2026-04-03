@@ -44,6 +44,11 @@ class UpgradePropertyRequest(BaseModel):
     position: int = Field(ge=0, le=39)
 
 
+class SellUpgradeRequest(BaseModel):
+    player_token: str = Field(min_length=32, max_length=32)
+    position: int = Field(ge=0, le=39)
+
+
 class MortgagePropertyRequest(BaseModel):
     player_token: str = Field(min_length=32, max_length=32)
     position: int = Field(ge=0, le=39)

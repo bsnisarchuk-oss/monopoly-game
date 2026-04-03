@@ -12,6 +12,7 @@ from room_store import (
     rejoin_room,
     respond_to_trade,
     roll_dice,
+    sell_upgrade,
     set_player_ready,
     skip_property_purchase,
     start_game,
@@ -30,6 +31,7 @@ from schemas import (
     ReadyStateRequest,
     RespondTradeRequest,
     RollDiceRequest,
+    SellUpgradeRequest,
     RoomActionResponse,
     RoomResponse,
     SkipPurchaseRequest,
@@ -107,6 +109,11 @@ def skip_purchase_endpoint(room_code: str, payload: SkipPurchaseRequest):
 @app.post("/rooms/{room_code}/upgrade", response_model=RoomActionResponse)
 def upgrade_property_endpoint(room_code: str, payload: UpgradePropertyRequest):
     return upgrade_property(room_code, payload.player_token, payload.position)
+
+
+@app.post("/rooms/{room_code}/sell-upgrade", response_model=RoomActionResponse)
+def sell_upgrade_endpoint(room_code: str, payload: SellUpgradeRequest):
+    return sell_upgrade(room_code, payload.player_token, payload.position)
 
 
 @app.post("/rooms/{room_code}/mortgage", response_model=RoomActionResponse)
