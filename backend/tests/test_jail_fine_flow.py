@@ -32,6 +32,7 @@ class JailFineFlowTests(unittest.TestCase):
         game = room["game"]
         game["turn"]["current_player_id"] = player_id
         game["turn"]["can_roll"] = True
+        game["positions"][player_id] = room_store.JAIL_POSITION
         game["in_jail"][player_id] = True
         game["turns_in_jail"][player_id] = turns_in_jail
 
@@ -52,6 +53,10 @@ class JailFineFlowTests(unittest.TestCase):
         )
         self.assertEqual(game["turn"]["current_player_id"], player_id)
         self.assertTrue(game["turn"]["can_roll"])
+        self.assertEqual(game["recent_events"][0]["kind"], room_store.EVENT_KIND_JAIL)
+        self.assertEqual(game["recent_events"][0]["player_id"], player_id)
+        self.assertIsNone(game["recent_events"][0]["target_player_id"])
+        self.assertEqual(game["recent_events"][0]["cell_index"], room_store.JAIL_POSITION)
         self.assertIn(
             f"Paid ${room_store.JAIL_FINE_AMOUNT} to leave Jail before rolling.",
             game["last_effects"],

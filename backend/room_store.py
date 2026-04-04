@@ -28,6 +28,14 @@ MAX_PROPERTY_LEVEL = 4
 PROPERTY_RENT_MULTIPLIERS = [1, 2, 4, 7, 11]
 BANKRUPTCY_CREDITOR_BANK = "bank"
 BANKRUPTCY_CREDITOR_PLAYER = "player"
+MAX_RECENT_EVENTS = 8
+EVENT_KIND_AUCTION = "auction"
+EVENT_KIND_BANKRUPTCY = "bankruptcy"
+EVENT_KIND_JAIL = "jail"
+EVENT_KIND_PROPERTY = "property"
+EVENT_KIND_ROLL = "roll"
+EVENT_KIND_SYSTEM = "system"
+EVENT_KIND_TRADE = "trade"
 
 rooms: dict[str, dict] = {}
 _rooms_lock = threading.Lock()
@@ -138,6 +146,52 @@ def _find_player_by_id(room: dict, player_id: str) -> dict:
 
 def _touch_room(room: dict) -> None:
     room["last_activity"] = time.time()
+
+
+def _append_recent_event(
+    game: dict,
+    event_kind: str,
+    player_id: str | None = None,
+    target_player_id: str | None = None,
+    cell_index: int | None = None,
+) -> None:
+    details = [effect for effect in game.get("last_effects", []) if effect]
+    if not details:
+        return
+
+    next_event_id = game.get("next_recent_event_id", 1)
+    event = {
+        "event_id": next_event_id,
+        "turn_number": game.get("turn", {}).get("turn_number", 0),
+        "kind": event_kind,
+        "player_id": player_id,
+        "target_player_id": target_player_id,
+        "cell_index": cell_index,
+        "summary": details[0],
+        "details": details,
+    }
+    game["next_recent_event_id"] = next_event_id + 1
+    existing_events = game.get("recent_events", [])
+    game["recent_events"] = [event, *existing_events][:MAX_RECENT_EVENTS]
+
+
+def _touch_room_with_event(
+    room: dict,
+    event_kind: str = EVENT_KIND_SYSTEM,
+    player_id: str | None = None,
+    target_player_id: str | None = None,
+    cell_index: int | None = None,
+) -> None:
+    game = room.get("game")
+    if game is not None:
+        _append_recent_event(
+            game,
+            event_kind,
+            player_id=player_id,
+            target_player_id=target_player_id,
+            cell_index=cell_index,
+        )
+    _touch_room(room)
 
 
 def _get_board_cell(position: int) -> dict:
@@ -294,6 +348,9 @@ def _create_game_state(room: dict) -> dict:
         "pending_trade": None,
         "pending_auction": None,
         "pending_bankruptcy": None,
+        "last_bankruptcy_summary": None,
+        "recent_events": [],
+        "next_recent_event_id": 1,
         "last_drawn_card": None,
         "winner_id": None,
         "last_landed_player_id": None,
@@ -696,7 +753,12 @@ def _start_bankruptcy_recovery(
         game["last_effects"].append(
             f"{player['nickname']} must recover ${amount_owed} or declare bankruptcy."
         )
-    _touch_room(room)
+    _touch_room_with_event(
+        room,
+        EVENT_KIND_BANKRUPTCY,
+        player_id=player_id,
+        target_player_id=creditor_player_id,
+    )
     return True
 
 
@@ -744,6 +806,14 @@ def _transfer_bankrupt_assets_to_creditor(
     return transferred_cash, transferred_positions, transferred_mortgaged_positions
 
 
+def _get_bankrupt_property_positions(game: dict, player_id: str) -> list[int]:
+    return [
+        position
+        for position, owner_id in game["property_owners"].items()
+        if owner_id == player_id
+    ]
+
+
 def _liquidate_bankrupt_upgrades(game: dict, player_id: str) -> tuple[int, int]:
     liquidated_upgrades = 0
     liquidation_cash = 0
@@ -773,13 +843,24 @@ def _eliminate_bankrupt_player(
     game = room["game"]
     player_id = player["player_id"]
     creditor_player_id = None
+    creditor_type = BANKRUPTCY_CREDITOR_BANK
+    creditor_name = "the bank"
 
-    if pending_bankruptcy and pending_bankruptcy.get("creditor_type") == BANKRUPTCY_CREDITOR_PLAYER:
-        creditor_player_id = pending_bankruptcy.get("creditor_player_id")
+    if pending_bankruptcy:
+        creditor_type = pending_bankruptcy.get("creditor_type", BANKRUPTCY_CREDITOR_BANK)
+        if creditor_type == BANKRUPTCY_CREDITOR_PLAYER:
+            creditor_player_id = pending_bankruptcy.get("creditor_player_id")
+            if creditor_player_id is not None:
+                creditor_name = _get_player_name(room, creditor_player_id)
 
     transferred_cash = 0
     transferred_positions = 0
     transferred_mortgaged_positions = 0
+    property_positions = _get_bankrupt_property_positions(game, player_id)
+    property_count = len(property_positions)
+    mortgaged_property_count = sum(
+        1 for position in property_positions if game["property_mortgaged"].get(position, False)
+    )
     liquidated_upgrades, liquidation_cash = _liquidate_bankrupt_upgrades(game, player_id)
     if creditor_player_id is not None:
         (
@@ -790,6 +871,23 @@ def _eliminate_bankrupt_player(
             room, player_id, creditor_player_id
         )
 
+    game["last_bankruptcy_summary"] = {
+        "debtor_player_id": player_id,
+        "debtor_nickname": player["nickname"],
+        "creditor_type": creditor_type,
+        "creditor_player_id": creditor_player_id,
+        "creditor_name": creditor_name,
+        "message": message,
+        "property_count": transferred_positions if creditor_player_id is not None else property_count,
+        "mortgaged_property_count": (
+            transferred_mortgaged_positions
+            if creditor_player_id is not None
+            else mortgaged_property_count
+        ),
+        "liquidated_upgrade_count": liquidated_upgrades,
+        "liquidation_cash": liquidation_cash,
+        "cash_collected": transferred_cash,
+    }
     game["last_effects"] = [message]
     if liquidation_cash > 0:
         game["last_effects"].append(
@@ -832,7 +930,12 @@ def _eliminate_bankrupt_player(
         game["winner_id"] = winner["player_id"]
         game["last_effects"].append(f"{winner['nickname']} wins the game.")
 
-    _touch_room(room)
+    _touch_room_with_event(
+        room,
+        EVENT_KIND_BANKRUPTCY,
+        player_id=player_id,
+        target_player_id=creditor_player_id,
+    )
 
 
 def _sync_pending_bankruptcy(room: dict, player_id: str) -> bool:
@@ -1113,6 +1216,9 @@ def leave_room(room_code: str, player_token: str) -> dict:
         room = _find_room_or_raise(normalized_room_code)
         player = _find_player_by_token(room, player_token)
         was_host = player["is_host"]
+        previous_effects: tuple[str, ...] = ()
+        if room.get("game") is not None:
+            previous_effects = tuple(room["game"].get("last_effects", []))
 
         room["players"] = [
             existing_player
@@ -1133,7 +1239,13 @@ def leave_room(room_code: str, player_token: str) -> dict:
             room["status"] = ROOM_STATUS_FINISHED
             room["game"]["winner_id"] = room["players"][0]["player_id"]
 
-        _touch_room(room)
+        if (
+            room.get("game") is not None
+            and tuple(room["game"].get("last_effects", [])) != previous_effects
+        ):
+            _touch_room_with_event(room, EVENT_KIND_SYSTEM, player_id=player["player_id"])
+        else:
+            _touch_room(room)
 
     return {"left_room": True, "room_deleted": False}
 
@@ -1247,7 +1359,12 @@ def roll_dice(room_code: str, player_token: str) -> dict:
                     turn["current_player_id"] = player_id
                     turn["can_roll"] = False
                     turn["turn_number"] += 1
-                    _touch_room(room)
+                    _touch_room_with_event(
+                        room,
+                        EVENT_KIND_JAIL,
+                        player_id=player_id,
+                        cell_index=landed_position,
+                    )
                     return _build_action_response(player, room)
 
                 if auction_started:
@@ -1255,7 +1372,12 @@ def roll_dice(room_code: str, player_token: str) -> dict:
                     turn["current_player_id"] = player_id
                     turn["can_roll"] = False
                     turn["turn_number"] += 1
-                    _touch_room(room)
+                    _touch_room_with_event(
+                        room,
+                        EVENT_KIND_JAIL,
+                        player_id=player_id,
+                        cell_index=landed_position,
+                    )
                     return _build_action_response(player, room)
                 turn["current_player_id"] = next_player_id
             else:
@@ -1314,7 +1436,12 @@ def roll_dice(room_code: str, player_token: str) -> dict:
                         turn["current_player_id"] = player_id
                         turn["can_roll"] = False
                         turn["turn_number"] += 1
-                        _touch_room(room)
+                        _touch_room_with_event(
+                            room,
+                            EVENT_KIND_JAIL,
+                            player_id=player_id,
+                            cell_index=landed_position,
+                        )
                         return _build_action_response(player, room)
 
                     if auction_started:
@@ -1322,7 +1449,12 @@ def roll_dice(room_code: str, player_token: str) -> dict:
                         turn["current_player_id"] = player_id
                         turn["can_roll"] = False
                         turn["turn_number"] += 1
-                        _touch_room(room)
+                        _touch_room_with_event(
+                            room,
+                            EVENT_KIND_JAIL,
+                            player_id=player_id,
+                            cell_index=landed_position,
+                        )
                         return _build_action_response(player, room)
                     turn["current_player_id"] = next_player_id
                 else:
@@ -1336,7 +1468,12 @@ def roll_dice(room_code: str, player_token: str) -> dict:
 
             turn["turn_number"] += 1
             turn["can_roll"] = True
-            _touch_room(room)
+            _touch_room_with_event(
+                room,
+                EVENT_KIND_JAIL,
+                player_id=player_id,
+                cell_index=game["last_landed_position"],
+            )
             return _build_action_response(player, room)
 
         if is_doubles:
@@ -1357,7 +1494,12 @@ def roll_dice(room_code: str, player_token: str) -> dict:
             turn["current_player_id"] = next_player_id
             turn["turn_number"] += 1
             turn["can_roll"] = True
-            _touch_room(room)
+            _touch_room_with_event(
+                room,
+                EVENT_KIND_JAIL,
+                player_id=player_id,
+                cell_index=JAIL_POSITION,
+            )
             return _build_action_response(player, room)
 
         (
@@ -1408,7 +1550,12 @@ def roll_dice(room_code: str, player_token: str) -> dict:
             turn["current_player_id"] = player_id
             turn["can_roll"] = False
             turn["turn_number"] += 1
-            _touch_room(room)
+            _touch_room_with_event(
+                room,
+                EVENT_KIND_ROLL,
+                player_id=player_id,
+                cell_index=landed_position,
+            )
             return _build_action_response(player, room)
         elif auction_started:
             if is_doubles:
@@ -1416,7 +1563,12 @@ def roll_dice(room_code: str, player_token: str) -> dict:
             turn["current_player_id"] = player_id
             turn["can_roll"] = False
             turn["turn_number"] += 1
-            _touch_room(room)
+            _touch_room_with_event(
+                room,
+                EVENT_KIND_ROLL,
+                player_id=player_id,
+                cell_index=landed_position,
+            )
             return _build_action_response(player, room)
         elif is_doubles:
             game["last_effects"].append("Rolled doubles, so you take another turn.")
@@ -1425,7 +1577,12 @@ def roll_dice(room_code: str, player_token: str) -> dict:
 
         turn["turn_number"] += 1
         turn["can_roll"] = True
-        _touch_room(room)
+        _touch_room_with_event(
+            room,
+            EVENT_KIND_ROLL,
+            player_id=player_id,
+            cell_index=landed_position,
+        )
 
     return _build_action_response(player, room)
 
@@ -1497,7 +1654,12 @@ def pay_jail_fine(room_code: str, player_token: str) -> dict:
         game["last_effects"] = [
             f"Paid ${JAIL_FINE_AMOUNT} to leave Jail before rolling.",
         ]
-        _touch_room(room)
+        _touch_room_with_event(
+            room,
+            EVENT_KIND_JAIL,
+            player_id=player_id,
+            cell_index=game["positions"][player_id],
+        )
 
     return _build_action_response(player, room)
 
@@ -1610,7 +1772,12 @@ def buy_property(room_code: str, player_token: str) -> dict:
             )
 
         _resume_turn_after_purchase(room, player_id)
-        _touch_room(room)
+        _touch_room_with_event(
+            room,
+            EVENT_KIND_PROPERTY,
+            player_id=player_id,
+            cell_index=position,
+        )
 
     return _build_action_response(player, room)
 
@@ -1629,11 +1796,21 @@ def skip_property_purchase(room_code: str, player_token: str) -> dict:
         game["last_effects"].append(f"Passed on buying {cell['name']}.")
 
         if _start_auction(room, player_id, position, game["last_effects"]):
-            _touch_room(room)
+            _touch_room_with_event(
+                room,
+                EVENT_KIND_AUCTION,
+                player_id=player_id,
+                cell_index=position,
+            )
             return _build_action_response(player, room)
 
         _resume_turn_after_purchase(room, player_id)
-        _touch_room(room)
+        _touch_room_with_event(
+            room,
+            EVENT_KIND_PROPERTY,
+            player_id=player_id,
+            cell_index=position,
+        )
 
     return _build_action_response(player, room)
 
@@ -1679,7 +1856,15 @@ def bid_in_auction(room_code: str, player_token: str, amount: int) -> dict:
                     f"{_get_player_name(room, next_player_id)} is next in the auction."
                 )
 
-        _touch_room(room)
+        if game.get("pending_auction") is None:
+            _touch_room_with_event(
+                room,
+                EVENT_KIND_AUCTION,
+                player_id=game["property_owners"].get(cell["index"]),
+                cell_index=cell["index"],
+            )
+        else:
+            _touch_room(room)
 
     return _build_action_response(player, room)
 
@@ -1719,7 +1904,15 @@ def pass_auction(room_code: str, player_token: str) -> dict:
                     f"{_get_player_name(room, next_player_id)} is next in the auction."
                 )
 
-        _touch_room(room)
+        if game.get("pending_auction") is None:
+            _touch_room_with_event(
+                room,
+                EVENT_KIND_AUCTION,
+                player_id=game["property_owners"].get(cell["index"]),
+                cell_index=cell["index"],
+            )
+        else:
+            _touch_room(room)
 
     return _build_action_response(player, room)
 
@@ -1829,7 +2022,12 @@ def upgrade_property(room_code: str, player_token: str, position: int) -> dict:
             f"Upgraded {cell['name']} to level {new_level} for ${upgrade_cost}.",
             f"Rent is now ${new_rent}.",
         ]
-        _touch_room(room)
+        _touch_room_with_event(
+            room,
+            EVENT_KIND_PROPERTY,
+            player_id=player_id,
+            cell_index=position,
+        )
 
     return _build_action_response(player, room)
 
@@ -1930,7 +2128,12 @@ def sell_upgrade(room_code: str, player_token: str, position: int) -> dict:
             f"Rent is now ${new_rent}.",
         ]
         _sync_pending_bankruptcy(room, player_id)
-        _touch_room(room)
+        _touch_room_with_event(
+            room,
+            EVENT_KIND_PROPERTY,
+            player_id=player_id,
+            cell_index=position,
+        )
 
     return _build_action_response(player, room)
 
@@ -2006,7 +2209,12 @@ def mortgage_property(room_code: str, player_token: str, position: int) -> dict:
         game["last_drawn_card"] = None
         game["last_effects"] = [f"Mortgaged {cell['name']} for ${mortgage_value}."]
         _sync_pending_bankruptcy(room, player_id)
-        _touch_room(room)
+        _touch_room_with_event(
+            room,
+            EVENT_KIND_PROPERTY,
+            player_id=player_id,
+            cell_index=position,
+        )
 
     return _build_action_response(player, room)
 
@@ -2084,7 +2292,12 @@ def unmortgage_property(room_code: str, player_token: str, position: int) -> dic
         game["property_mortgaged"][position] = False
         game["last_drawn_card"] = None
         game["last_effects"] = [f"Unmortgaged {cell['name']} for ${unmortgage_cost}."]
-        _touch_room(room)
+        _touch_room_with_event(
+            room,
+            EVENT_KIND_PROPERTY,
+            player_id=player_id,
+            cell_index=position,
+        )
 
     return _build_action_response(player, room)
 
@@ -2179,7 +2392,13 @@ def propose_trade(
         game["last_effects"] = [
             f"Offered {cell['name']} to {target_player['nickname']} for ${cash_amount}.",
         ]
-        _touch_room(room)
+        _touch_room_with_event(
+            room,
+            EVENT_KIND_TRADE,
+            player_id=player_id,
+            target_player_id=target_player_id,
+            cell_index=position,
+        )
 
     return _build_action_response(player, room)
 
@@ -2265,6 +2484,12 @@ def respond_to_trade(room_code: str, player_token: str, accept: bool) -> dict:
             )
 
         _sync_pending_bankruptcy(room, proposer_id)
-        _touch_room(room)
+        _touch_room_with_event(
+            room,
+            EVENT_KIND_TRADE,
+            player_id=receiver_id,
+            target_player_id=proposer_id,
+            cell_index=position,
+        )
 
     return _build_action_response(player, room)

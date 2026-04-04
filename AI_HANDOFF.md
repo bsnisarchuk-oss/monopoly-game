@@ -1,7 +1,7 @@
 # AI Handoff
 
 ## Project
-Online Monopoly-style game.
+Online Monopoly-style game for learning and iterative AI-assisted development.
 
 ## Stack
 - Frontend: React + Vite + JavaScript
@@ -17,160 +17,251 @@ Online Monopoly-style game.
 ```powershell
 cd U:\Monopoly\backend
 .\.venv\Scripts\python -m uvicorn main:app --reload
+```
 
-Frontend
+### Frontend
+```powershell
 cd U:\Monopoly\frontend
 npm.cmd run dev
+```
 
-Open
-Frontend: http://localhost:5173
-Backend docs: http://127.0.0.1:8000/docs
-Current architecture
-Server is authoritative.
-Game rules must stay in backend.
-Frontend should only render state and send player actions.
-Room and game state are currently stored in memory on the backend.
-Identity is based on player_token.
-Rejoin uses localStorage on the frontend.
-What is already implemented
-Lobby / room flow
-create room
-join room
-ready / unready
-host-only start
-leave room
-rejoin
-host transfer
-room cleanup by TTL
-Core game flow
-game states: lobby, in_game, finished
-current turn tracking
-roll dice
-doubles logic
-jail logic
-go to jail logic
-winner when one player remains
-Board / movement
-board data
-positions on board
-pass start bonus
-tax cells
-go to jail cell
-chance / community cards
-last landed cell
-last effects log
-Economy
-buy property
-skip purchase
-ownership
-rent
-property levels / upgrades
-sell upgrades
-mortgage / unmortgage
-trade between players (simplified cash-for-property flow)
-bankruptcy / elimination
-Frontend
-room screens
-lobby UI
-game board UI
-center panel for current state
-pending purchase UI
-upgrade UI
-mortgage UI
-trade desk UI
-finished / eliminated screens
-Simplified rules currently used
-This is an MVP, not full Monopoly.
+### Open
+- Frontend: `http://localhost:5173`
+- Backend docs: `http://127.0.0.1:8000/docs`
 
-Examples of simplifications:
+## Verified Status
+As of the latest handoff update:
+- Backend tests: `57/57 OK`
+- Frontend: `npm.cmd run lint` OK
+- Frontend: `npm.cmd run build` OK
 
-no full auction system yet
-no advanced trade negotiation UI
-no bots
-no accounts
-no persistent database
-no WebSocket yet
-upgrades are simplified houses-like levels
-trade is currently property-for-cash only
-Current important backend files
-U:\Monopoly\backend\main.py
-U:\Monopoly\backend\schemas.py
-U:\Monopoly\backend\room_store.py
-U:\Monopoly\backend\board_data.py
-U:\Monopoly\backend\card_data.py
-Current important frontend files
-U:\Monopoly\frontend\src\App.jsx
-U:\Monopoly\frontend\src\index.css
-Current next step
-Likely next mechanic:
+## Core Architecture Rules
+- Server is authoritative.
+- Game rules must stay in backend.
+- Frontend should render state and send actions only.
+- Room/game state is currently stored in memory on the backend.
+- Identity is based on `player_token`.
+- Rejoin uses `localStorage` on the frontend.
+- Do not rely only on this handoff: always inspect the real files before continuing.
 
-auction
-Possible alternative if needed:
+## What Is Already Implemented
+### Room and lobby flow
+- Create room
+- Join room
+- Ready / unready
+- Host-only start
+- Leave room
+- Rejoin from stored session
+- Host transfer
+- Room cleanup by TTL
 
-another economy/system improvement that fits MVP
+### Core game flow
+- `lobby`, `in_game`, `finished`
+- Turn order
+- Dice rolling
+- Doubles logic
+- Jail logic
+- Go to jail logic
+- Winner when one player remains
 
-Known working principle for future AI help
-Always:
+### Board and movement
+- 40-cell board data
+- Player positions
+- Pass Start bonus
+- Tax cells
+- Go To Jail cell
+- Chance / Community cards
+- Last landed cell
 
-read this file first
-then inspect the real project files
-only after that suggest the next step
-Do not rely only on this handoff because Claude Code may have changed files.
+### Economy and property rules
+- Buy property
+- Skip purchase
+- Auction flow
+- Ownership
+- Rent
+- Full color set doubles base rent when allowed
+- Mortgage / unmortgage
+- Upgrade / sell upgrade
+- Even-build rule
+- Even-sell rule
+- Mortgage blocks upgrade when group state requires it
+- Trade between players for property + cash
+- Completed-set / upgrades-unlocked messages are suppressed when mortgage state should block them
 
-How to work with the user
+### Jail flow
+- Jail turn counter
+- Forced fine and movement on the 3rd failed escape attempt
+- Voluntary pay `$50` before roll
+- UI warning / counter for jail turns
+
+### Debt recovery and bankruptcy
+- Negative cash no longer always means instant elimination
+- `pending_bankruptcy` recovery flow
+- Recovery can be resolved via:
+  - mortgage
+  - sell upgrade
+  - trade
+  - declare bankruptcy
+- Creditor-aware debt:
+  - debt can be owed to bank
+  - debt can be owed to another player
+- Partial rent payment when player cannot cover full debt
+- `resume_player_id` support so turn flow recovers correctly after debt resolution
+- Recovery handles player leave / creditor leave / resume-player leave cases
+- Final bankruptcy:
+  - liquidates upgrades automatically first
+  - transfers properties / cash to creditor when applicable
+  - mortgaged properties transfer as mortgaged
+  - mortgaged takeover does not produce rent until unmortgaged
+- `last_bankruptcy_summary` is exposed to UI
+
+### Recent events / recap system
+- Structured `recent_events` in backend state
+- `event_id` monotonic ids
+- `kind` categories
+- structured refs:
+  - `player_id`
+  - `target_player_id`
+  - `cell_index`
+- `last_bankruptcy_summary` recap card in UI
+- Recent events UI supports:
+  - grouping
+  - `Show more / Show less`
+  - kind filters
+  - fixed filter order
+  - event focus
+  - entity filtering from board cells / player cards
+  - linked-event badges on cells and player cards
+  - `9+` compact badge display
+  - help legend
+  - help persistence via `localStorage`
+  - mobile `More` actions menu
+  - keyboard navigation
+  - accessibility / ARIA polish
+  - `aria-live` announcements
+
+### Board UI polish
+- Board cells clickable for recent-event navigation
+- Player cards clickable for recent-event navigation
+- MVP player tokens on board:
+  - colored circular tokens
+  - first-letter initial
+  - active-turn highlight
+  - overlap stacking for crowded cells
+  - special jail split for cell 10:
+    - visiting zone
+    - jailed zone
+  - mobile token sizing override
+
+## Important Backend Files
+- `U:\Monopoly\backend\main.py`
+- `U:\Monopoly\backend\schemas.py`
+- `U:\Monopoly\backend\room_store.py`
+- `U:\Monopoly\backend\board_data.py`
+- `U:\Monopoly\backend\card_data.py`
+- `U:\Monopoly\backend\tests\test_auction_flow.py`
+- `U:\Monopoly\backend\tests\test_debt_recovery_flow.py`
+- `U:\Monopoly\backend\tests\test_jail_fine_flow.py`
+- `U:\Monopoly\backend\tests\test_property_rules.py`
+
+## Important Frontend Files
+- `U:\Monopoly\frontend\src\App.jsx`
+- `U:\Monopoly\frontend\src\index.css`
+
+## Current MVP Simplifications
+- No WebSocket yet
+- No persistent database
+- No bots
+- No accounts
+- Trade UI is still simplified
+- In-memory backend state only
+- Board tokens are MVP circles, not themed pieces yet
+- Token movement is not animated yet
+
+## Best Next Step
+The best next practical step is:
+
+**Add simple token movement feedback on the board**
+
+Recommended version:
+- keep backend unchanged
+- frontend-only improvement
+- animate or at least visually emphasize the token that just moved
+- keep it simple and readable on mobile
+
+Good concrete target:
+- short movement animation or step transition for board tokens
+- highlight the token / destination cell after movement
+
+## What Claude Code Should Check Next
+For the next board-token step, Claude Code is most useful for:
+- overlap readability when 3-4 tokens share one cell
+- jail vs visiting layout on cell 10
+- corner-cell layout
+- mobile layout around `390px`
+- whether color-by-player-order is acceptable long-term
+- UX review for token movement animation before implementation
+
+## What Codex Should Do Next
+Codex is best for:
+- implementing the token movement / highlight UI
+- wiring the visual behavior into existing React state
+- CSS changes
+- build/lint verification
+
+## What The User Should Learn
+The user should keep learning:
+- React rendering from state
+- UI state vs game state
+- `useState`
+- `useEffect`
+- `useRef`
+- keyboard / focus management
+- `fetch`
+- FastAPI routes
+- Pydantic schemas
+- backend validation
+- server-authoritative game logic
+- how to turn a rule into a regression test
+- git workflow with small commits
+
+## How To Start A New Chat
+Always begin with:
+1. Read `AI_HANDOFF.md`
+2. Inspect the real files
+3. Summarize the real current state
+4. Only then propose the next practical step
+
+## Suggested New Chat Prompt For Codex
+```text
+Read AI_HANDOFF.md first, then inspect the real files.
+Summarize the real current state of the project.
+We are continuing from the latest board-token work.
+The next practical step is simple token movement feedback / animation on the board.
+Do not rely only on the handoff; verify the real code first.
+```
+
+## Suggested New Chat Prompt For Claude Code
+```text
+Read AI_HANDOFF.md first, then inspect the real files.
+Review the current board-token implementation and prepare edge-case / UX guidance for the next step:
+- token overlap
+- jail vs visiting layout
+- corner cells
+- mobile layout
+- movement highlight / animation risks
+Do not rely only on the handoff; verify the real code first.
+```
+
+## Working Style With This User
 This project is also for learning.
 
 When helping:
+- explain what we are doing now
+- explain what the user needs to understand and learn
+- say when to use Codex
+- say when to use Claude Code
+- keep explanations practical and beginner-friendly
+- prefer implementing the next real step instead of only discussing theory
 
-explain what we are doing now
-explain what the user absolutely needs to understand and learn
-say when to use Codex
-say when to use Claude Code
-keep explanations practical and beginner-friendly
-prefer building the next real feature instead of only discussing theory
-When to use Codex
-Use Codex mainly for:
-
-writing routine code
-adding endpoints
-adding React UI
-wiring backend and frontend
-generating repetitive logic
-explaining specific code line by line
-When to use Claude Code
-Use Claude Code mainly for:
-
-code review
-architecture checks
-edge cases
-hidden logic bugs
-state machine risks
-checking whether a rule or flow can break
-Important note about Claude Code changes
 If Claude Code changed files, verify the real codebase before continuing.
-Do not assume the previous explanation is still correct without checking files.
-
-Main learning topics for the user
-The user should keep learning:
-
-React components
-state
-props
-event handling
-controlled inputs
-async/await
-fetch
-FastAPI routes
-Pydantic schemas
-server-authoritative game logic
-shared game state thinking
-validation on backend
-difference between UI state and game state
-Git / workflow
-Use small commits after meaningful milestones.
-If starting a new chat, ask the AI to:
-
-read AI_HANDOFF.md
-inspect the real files
-summarize current project state
-propose the next practical step

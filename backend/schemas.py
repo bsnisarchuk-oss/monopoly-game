@@ -156,6 +156,31 @@ class PendingBankruptcyResponse(BaseModel):
     creditor_player_id: str | None = None
 
 
+class BankruptcySummaryResponse(BaseModel):
+    debtor_player_id: str
+    debtor_nickname: str
+    creditor_type: str
+    creditor_player_id: str | None = None
+    creditor_name: str
+    message: str
+    property_count: int
+    mortgaged_property_count: int
+    liquidated_upgrade_count: int
+    liquidation_cash: int
+    cash_collected: int
+
+
+class RecentEventResponse(BaseModel):
+    event_id: int
+    turn_number: int
+    kind: str
+    player_id: str | None = None
+    target_player_id: str | None = None
+    cell_index: int | None = None
+    summary: str
+    details: list[str]
+
+
 class GameStateResponse(BaseModel):
     board: list[BoardCellResponse]
     turn: TurnStateResponse
@@ -171,6 +196,8 @@ class GameStateResponse(BaseModel):
     pending_trade: PendingTradeResponse | None = None
     pending_auction: PendingAuctionResponse | None = None
     pending_bankruptcy: PendingBankruptcyResponse | None = None
+    last_bankruptcy_summary: BankruptcySummaryResponse | None = None
+    recent_events: list[RecentEventResponse]
     last_drawn_card: DrawnCardResponse | None = None
     winner_id: str | None = None
     last_landed_player_id: str | None = None

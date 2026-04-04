@@ -54,6 +54,9 @@ class DebtRecoveryFlowTests(unittest.TestCase):
         self.assertEqual(response_game["cash"][host_player_id], room_store.STARTING_CASH + 10)
         self.assertEqual(len(response["room"]["players"]), 2)
         self.assertIn("must recover $10 owed to Host or declare bankruptcy.", " ".join(response_game["last_effects"]))
+        self.assertEqual(response_game["recent_events"][0]["player_id"], guest_player_id)
+        self.assertEqual(response_game["recent_events"][0]["target_player_id"], host_player_id)
+        self.assertIsNone(response_game["recent_events"][0]["cell_index"])
 
     def test_tax_starts_bankruptcy_recovery_owed_to_bank(self):
         room_code, room, responses = self._create_started_room(starting_player_index=1)
@@ -151,12 +154,20 @@ class DebtRecoveryFlowTests(unittest.TestCase):
 
         response = room_store.declare_bankruptcy(room_code, host_response["player_token"])
         response_room = response["room"]
+        bankruptcy_summary = response_room["game"]["last_bankruptcy_summary"]
 
         self.assertEqual(response_room["status"], room_store.ROOM_STATUS_FINISHED)
         self.assertEqual(response_room["game"]["winner_id"], guest_player_id)
         self.assertEqual(len(response_room["players"]), 1)
         self.assertEqual(response_room["players"][0]["player_id"], guest_player_id)
         self.assertIn("declared bankruptcy and was eliminated.", " ".join(response_room["game"]["last_effects"]))
+        self.assertEqual(bankruptcy_summary["debtor_player_id"], host_player_id)
+        self.assertEqual(bankruptcy_summary["debtor_nickname"], "Host")
+        self.assertEqual(bankruptcy_summary["creditor_type"], room_store.BANKRUPTCY_CREDITOR_BANK)
+        self.assertEqual(bankruptcy_summary["creditor_name"], "the bank")
+        self.assertEqual(bankruptcy_summary["property_count"], 0)
+        self.assertEqual(bankruptcy_summary["liquidated_upgrade_count"], 0)
+        self.assertEqual(response_room["game"]["recent_events"][0]["kind"], room_store.EVENT_KIND_BANKRUPTCY)
 
     def test_player_creditor_collects_assets_on_bankruptcy(self):
         room_code, room, responses = self._create_started_room()
@@ -184,6 +195,7 @@ class DebtRecoveryFlowTests(unittest.TestCase):
         response = room_store.declare_bankruptcy(room_code, guest_response["player_token"])
         response_room = response["room"]
         response_game = response_room["game"]
+        bankruptcy_summary = response_game["last_bankruptcy_summary"]
 
         self.assertEqual(response_room["status"], room_store.ROOM_STATUS_FINISHED)
         self.assertEqual(response_game["winner_id"], host_player_id)
@@ -197,6 +209,134 @@ class DebtRecoveryFlowTests(unittest.TestCase):
             "received 1 mortgaged property. They stay mortgaged until unmortgaged.",
             " ".join(response_game["last_effects"]),
         )
+        self.assertEqual(bankruptcy_summary["debtor_player_id"], guest_player_id)
+        self.assertEqual(bankruptcy_summary["debtor_nickname"], "Guest")
+        self.assertEqual(bankruptcy_summary["creditor_type"], room_store.BANKRUPTCY_CREDITOR_PLAYER)
+        self.assertEqual(bankruptcy_summary["creditor_player_id"], host_player_id)
+        self.assertEqual(bankruptcy_summary["creditor_name"], "Host")
+        self.assertEqual(bankruptcy_summary["property_count"], 2)
+        self.assertEqual(bankruptcy_summary["mortgaged_property_count"], 1)
+        self.assertEqual(bankruptcy_summary["liquidated_upgrade_count"], 1)
+        self.assertEqual(bankruptcy_summary["liquidation_cash"], 25)
+        self.assertEqual(bankruptcy_summary["cash_collected"], 65)
+
+    def test_bankruptcy_summary_tracks_properties_returned_to_bank(self):
+        room_code, room, responses = self._create_started_room()
+        host_response, guest_response = responses
+        host_player_id = host_response["player_id"]
+        guest_player_id = guest_response["player_id"]
+        game = room["game"]
+
+        game["cash"][host_player_id] = -25
+        game["property_owners"][5] = host_player_id
+        game["property_mortgaged"][5] = True
+        game["pending_bankruptcy"] = {
+            "player_id": host_player_id,
+            "amount_owed": 25,
+            "resume_player_id": guest_player_id,
+            "creditor_type": room_store.BANKRUPTCY_CREDITOR_BANK,
+            "creditor_player_id": None,
+        }
+        game["turn"]["current_player_id"] = host_player_id
+        game["turn"]["can_roll"] = False
+
+        response = room_store.declare_bankruptcy(room_code, host_response["player_token"])
+        bankruptcy_summary = response["room"]["game"]["last_bankruptcy_summary"]
+
+        self.assertEqual(bankruptcy_summary["creditor_type"], room_store.BANKRUPTCY_CREDITOR_BANK)
+        self.assertEqual(bankruptcy_summary["creditor_name"], "the bank")
+        self.assertEqual(bankruptcy_summary["property_count"], 1)
+        self.assertEqual(bankruptcy_summary["mortgaged_property_count"], 1)
+        self.assertEqual(bankruptcy_summary["cash_collected"], 0)
+
+    def test_recent_events_history_keeps_newest_first(self):
+        room_code, room, responses = self._create_started_room()
+        host_response, guest_response = responses
+        host_player_id = host_response["player_id"]
+        guest_player_id = guest_response["player_id"]
+        game = room["game"]
+
+        game["property_owners"][5] = host_player_id
+        game["property_mortgaged"][5] = False
+        game["turn"]["current_player_id"] = host_player_id
+        game["turn"]["can_roll"] = True
+
+        room_store.propose_trade(room_code, host_response["player_token"], guest_player_id, 5, 50)
+        response = room_store.respond_to_trade(room_code, guest_response["player_token"], False)
+        recent_events = response["room"]["game"]["recent_events"]
+
+        # Trade rejected/cancelled does not get written to history (noise reduction).
+        # Only the propose_trade event should appear.
+        self.assertGreaterEqual(len(recent_events), 1)
+        self.assertEqual(recent_events[0]["kind"], room_store.EVENT_KIND_TRADE)
+        self.assertEqual(recent_events[0]["event_id"], 1)
+        self.assertEqual(recent_events[0]["player_id"], host_player_id)
+        self.assertEqual(recent_events[0]["target_player_id"], guest_player_id)
+        self.assertEqual(recent_events[0]["cell_index"], 5)
+        self.assertEqual(recent_events[0]["summary"], "Offered North Line to Guest for $50.")
+        self.assertEqual(recent_events[0]["details"], ["Offered North Line to Guest for $50."])
+
+    def test_recent_events_store_multi_line_effects(self):
+        room_code, room, responses = self._create_started_room()
+        host_response, _ = responses
+        host_player_id = host_response["player_id"]
+        game = room["game"]
+
+        game["property_owners"][6] = host_player_id
+        game["property_owners"][8] = host_player_id
+        game["property_owners"][9] = host_player_id
+        game["property_mortgaged"][6] = False
+        game["property_mortgaged"][8] = False
+        game["property_mortgaged"][9] = False
+        game["turn"]["current_player_id"] = host_player_id
+        game["turn"]["can_roll"] = True
+
+        response = room_store.upgrade_property(room_code, host_response["player_token"], 6)
+        recent_event = response["room"]["game"]["recent_events"][0]
+
+        self.assertEqual(recent_event["event_id"], 1)
+        self.assertEqual(recent_event["kind"], room_store.EVENT_KIND_PROPERTY)
+        self.assertEqual(recent_event["player_id"], host_player_id)
+        self.assertIsNone(recent_event["target_player_id"])
+        self.assertEqual(recent_event["cell_index"], 6)
+        self.assertEqual(recent_event["summary"], "Upgraded Juniper Street to level 1 for $50.")
+        self.assertEqual(
+            recent_event["details"],
+            [
+                "Upgraded Juniper Street to level 1 for $50.",
+                "Rent is now $20.",
+            ],
+        )
+
+    def test_recent_events_use_monotonic_event_ids(self):
+        room_code, room, responses = self._create_started_room()
+        host_response, _ = responses
+        host_player_id = host_response["player_id"]
+        game = room["game"]
+
+        game["property_owners"][5] = host_player_id
+        game["property_mortgaged"][5] = False
+        game["turn"]["current_player_id"] = host_player_id
+        game["turn"]["can_roll"] = True
+
+        room_store.mortgage_property(room_code, host_response["player_token"], 5)
+        response = room_store.unmortgage_property(room_code, host_response["player_token"], 5)
+        recent_events = response["room"]["game"]["recent_events"]
+        expected_mortgage_value = room_store._get_mortgage_value(room_store.BOARD_CELLS[5])
+        expected_unmortgage_cost = room_store._get_unmortgage_cost(
+            room_store.BOARD_CELLS[5]
+        )
+
+        self.assertEqual(
+            recent_events[0]["summary"],
+            f"Unmortgaged North Line for ${expected_unmortgage_cost}.",
+        )
+        self.assertEqual(recent_events[0]["event_id"], 2)
+        self.assertEqual(
+            recent_events[1]["summary"],
+            f"Mortgaged North Line for ${expected_mortgage_value}.",
+        )
+        self.assertEqual(recent_events[1]["event_id"], 1)
 
     def test_mortgaged_property_from_bankruptcy_stays_inactive_until_unmortgaged(self):
         room_code, room, responses = self._create_started_room(

@@ -82,6 +82,10 @@ class AuctionFlowTests(unittest.TestCase):
         self.assertEqual(game["cash"][guest_response["player_id"]], room_store.STARTING_CASH - 50)
         self.assertEqual(game["turn"]["current_player_id"], guest_response["player_id"])
         self.assertTrue(game["turn"]["can_roll"])
+        self.assertEqual(game["recent_events"][0]["kind"], room_store.EVENT_KIND_AUCTION)
+        self.assertEqual(game["recent_events"][0]["player_id"], guest_response["player_id"])
+        self.assertIsNone(game["recent_events"][0]["target_player_id"])
+        self.assertEqual(game["recent_events"][0]["cell_index"], 1)
         self.assertIn(
             "won the auction for Copper Hollow at $50.",
             " ".join(game["last_effects"]),

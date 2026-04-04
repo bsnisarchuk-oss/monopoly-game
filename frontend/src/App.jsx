@@ -1,10 +1,16 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 const API_BASE_URL = "http://127.0.0.1:8000";
 const SESSION_STORAGE_KEY = "monopoly_player_session";
+const RECENT_EVENTS_HELP_COLLAPSED_KEY = "monopoly_recent_events_help_collapsed";
 const JAIL_FINE_AMOUNT = 50;
 const MAX_PROPERTY_LEVEL = 4;
+const JAIL_POSITION = 10;
 const PROPERTY_RENT_MULTIPLIERS = [1, 2, 4, 7, 11];
+const RECENT_EVENT_HIGHLIGHT_MS = 4500;
+const MOBILE_RECENT_EVENTS_BREAKPOINT = "(max-width: 640px)";
+const EMPTY_RECENT_EVENTS = [];
+const PLAYER_TOKEN_COLORS = ["#d94f3d", "#3b7fd4", "#3aaa5e", "#e09b2a"];
 
 function loadStoredSession() {
   if (typeof window === "undefined") {
@@ -39,6 +45,62 @@ function clearStoredSession() {
   }
 
   window.localStorage.removeItem(SESSION_STORAGE_KEY);
+}
+
+function loadStoredRecentEventsHelpCollapsed() {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  const rawValue = window.localStorage.getItem(RECENT_EVENTS_HELP_COLLAPSED_KEY);
+
+  if (rawValue == null) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(rawValue);
+  } catch {
+    window.localStorage.removeItem(RECENT_EVENTS_HELP_COLLAPSED_KEY);
+    return null;
+  }
+}
+
+function saveStoredRecentEventsHelpCollapsed(isCollapsed) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  window.localStorage.setItem(
+    RECENT_EVENTS_HELP_COLLAPSED_KEY,
+    JSON.stringify(Boolean(isCollapsed)),
+  );
+}
+
+function getResponsiveRecentEventsHelpCollapsed() {
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+    return false;
+  }
+
+  return window.matchMedia(MOBILE_RECENT_EVENTS_BREAKPOINT).matches;
+}
+
+function clearStoredRecentEventsHelpCollapsed() {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  window.localStorage.removeItem(RECENT_EVENTS_HELP_COLLAPSED_KEY);
+}
+
+function getDefaultRecentEventsHelpCollapsed() {
+  const storedPreference = loadStoredRecentEventsHelpCollapsed();
+
+  if (typeof storedPreference === "boolean") {
+    return storedPreference;
+  }
+
+  return getResponsiveRecentEventsHelpCollapsed();
 }
 
 function formatCellType(cellType) {
@@ -114,6 +176,778 @@ function getRentHint(cell, level = 0) {
   return null;
 }
 
+function getCountLabel(count, singular, plural = `${singular}s`) {
+  return `${count} ${count === 1 ? singular : plural}`;
+}
+
+function BankruptcySummaryCard({ summary, title }) {
+  if (!summary) {
+    return null;
+  }
+
+  const transferParts = [];
+  if (summary.cash_collected > 0) {
+    transferParts.push(`$${summary.cash_collected} cash`);
+  }
+  if (summary.property_count > 0) {
+    transferParts.push(getCountLabel(summary.property_count, "property"));
+  }
+
+  const transferLine =
+    summary.creditor_type === "player"
+      ? transferParts.length > 0
+        ? `${summary.creditor_name} collected ${transferParts.join(" and ")} from the bankruptcy.`
+        : `${summary.creditor_name} did not collect extra cash or properties from the bankruptcy.`
+      : summary.property_count > 0
+        ? `${getCountLabel(summary.property_count, "property")} returned to the bank.`
+        : "No properties were left to return to the bank.";
+  const liquidationLine =
+    summary.liquidated_upgrade_count > 0
+      ? `${getCountLabel(summary.liquidated_upgrade_count, "upgrade")} ${
+          summary.liquidated_upgrade_count === 1 ? "was" : "were"
+        } liquidated for $${summary.liquidation_cash} before assets moved.`
+      : "No upgrades needed liquidation.";
+  const mortgageLine =
+    summary.mortgaged_property_count > 0
+      ? `${getCountLabel(summary.mortgaged_property_count, "property")} stayed mortgaged after the takeover.`
+      : "No mortgaged properties were part of this transfer.";
+
+  return (
+    <section className="bankruptcy-recap">
+      <h3>{title}</h3>
+      <p className="bankruptcy-recap-message">{summary.message}</p>
+
+      <div className="bankruptcy-recap-stats">
+        <article className="bankruptcy-recap-stat">
+          <span>Debtor</span>
+          <strong>{summary.debtor_nickname}</strong>
+        </article>
+        <article className="bankruptcy-recap-stat">
+          <span>Creditor</span>
+          <strong>{summary.creditor_name}</strong>
+        </article>
+        <article className="bankruptcy-recap-stat">
+          <span>Properties</span>
+          <strong>{summary.property_count}</strong>
+        </article>
+        <article className="bankruptcy-recap-stat">
+          <span>Liquidated</span>
+          <strong>${summary.liquidation_cash}</strong>
+        </article>
+      </div>
+
+      <div className="bankruptcy-recap-notes">
+        <p>{transferLine}</p>
+        <p>{liquidationLine}</p>
+        <p>{mortgageLine}</p>
+      </div>
+    </section>
+  );
+}
+
+function formatRecentEventKind(kind) {
+  switch (kind) {
+    case "auction":
+      return "Auction";
+    case "bankruptcy":
+      return "Bankruptcy";
+    case "jail":
+      return "Jail";
+    case "property":
+      return "Property";
+    case "roll":
+      return "Roll";
+    case "trade":
+      return "Trade";
+    default:
+      return "System";
+  }
+}
+
+function groupRecentEvents(events) {
+  if (!events || events.length === 0) {
+    return [];
+  }
+
+  const groups = [];
+  for (const event of events) {
+    const eventKind = event.kind ?? "system";
+    const currentGroup = groups.at(-1);
+
+    if (currentGroup && currentGroup.kind === eventKind) {
+      currentGroup.events.push(event);
+      currentGroup.oldestTurnNumber = event.turn_number;
+      continue;
+    }
+
+    groups.push({
+      kind: eventKind,
+      newestTurnNumber: event.turn_number,
+      oldestTurnNumber: event.turn_number,
+      events: [event],
+    });
+  }
+
+  return groups;
+}
+
+function formatRecentEventTurnLabel(group) {
+  if (group.newestTurnNumber === group.oldestTurnNumber) {
+    return `Turn ${group.newestTurnNumber}`;
+  }
+
+  return `Turns ${group.newestTurnNumber}-${group.oldestTurnNumber}`;
+}
+
+function buildRecentEventGroupKey(group) {
+  const oldestEvent = group.events[group.events.length - 1];
+  const anchorEventId = oldestEvent?.event_id ?? oldestEvent?.turn_number ?? group.oldestTurnNumber ?? 0;
+
+  return `${group.kind}-${anchorEventId}`;
+}
+
+function hasRecentEventReferences(event) {
+  return (
+    Number.isInteger(event?.cell_index) ||
+    Boolean(event?.player_id) ||
+    Boolean(event?.target_player_id)
+  );
+}
+
+function recentEventMatchesEntityFilter(event, entityFilter) {
+  if (!entityFilter) {
+    return true;
+  }
+
+  if (entityFilter.type === "cell") {
+    return event.cell_index === entityFilter.cellIndex;
+  }
+
+  if (entityFilter.type === "player") {
+    return entityFilter.playerIds.some(
+      (playerId) => event.player_id === playerId || event.target_player_id === playerId,
+    );
+  }
+
+  return true;
+}
+
+function filterRecentEventsByKind(events, selectedKind) {
+  if (selectedKind === "all") {
+    return events;
+  }
+
+  return events.filter((event) => (event.kind ?? "system") === selectedKind);
+}
+
+function formatLinkedEventCount(count) {
+  return count > 9 ? "9+" : String(count);
+}
+
+function formatLinkedEventLabel(count, subjectLabel) {
+  return `${count} linked event${count === 1 ? "" : "s"} for ${subjectLabel}`;
+}
+
+function getPlayerTokenLabel(nickname) {
+  return (nickname?.trim()?.[0] ?? "?").toUpperCase();
+}
+
+function formatRecentEventsAnnouncementScope(activeKind, entityFilter) {
+  const baseScope =
+    activeKind === "all"
+      ? "the current recent events view"
+      : `${formatRecentEventKind(activeKind).toLowerCase()} events`;
+
+  if (!entityFilter?.label) {
+    return baseScope;
+  }
+
+  if (activeKind === "all") {
+    return `events linked to ${entityFilter.label}`;
+  }
+
+  return `${baseScope} linked to ${entityFilter.label}`;
+}
+
+const KIND_ORDER = ["roll", "property", "auction", "trade", "jail", "bankruptcy", "system"];
+
+function RecentEventsCard({
+  events,
+  title,
+  maxGroups = 4,
+  selectedKind = "all",
+  expandedGroups = {},
+  freshEventIds = {},
+  focusedEventId = null,
+  entityFilter = null,
+  onSelectKind,
+  onToggleGroup,
+  onFocusEvent,
+  onClearFocus,
+  showNavigationHelp = false,
+  isNavigationHelpCollapsed = false,
+  onToggleNavigationHelp,
+  onResetNavigationHelp,
+  announceUpdates = false,
+  clearFocusAnnouncementId = 0,
+}) {
+  const [isActionsMenuOpen, setIsActionsMenuOpen] = useState(false);
+  const actionsMenuContainerRef = useRef(null);
+  const actionsMenuToggleRef = useRef(null);
+  const actionsMenuItemRefs = useRef([]);
+  const liveStatusRef = useRef(null);
+  const liveAnnouncementFrameRef = useRef(null);
+  const previousLiveSnapshotRef = useRef(null);
+  const shouldRestoreMenuFocusRef = useRef(false);
+  const pendingActionsMenuFocusIndexRef = useRef(null);
+  const safeEvents = events ?? EMPTY_RECENT_EVENTS;
+
+  function closeActionsMenu({ returnFocus = false } = {}) {
+    setIsActionsMenuOpen(false);
+    shouldRestoreMenuFocusRef.current = returnFocus;
+    pendingActionsMenuFocusIndexRef.current = null;
+  }
+
+  function focusActionsMenuItem(index) {
+    const target = actionsMenuItemRefs.current[index];
+    if (target && target.offsetParent !== null) {
+      target.focus();
+    }
+  }
+
+  function openActionsMenu({ focusIndex = null } = {}) {
+    pendingActionsMenuFocusIndexRef.current = focusIndex;
+    setIsActionsMenuOpen(true);
+  }
+
+  useEffect(() => {
+    if (!isActionsMenuOpen && shouldRestoreMenuFocusRef.current) {
+      const toggle = actionsMenuToggleRef.current;
+      if (toggle && toggle.offsetParent !== null) {
+        toggle.focus();
+      }
+      shouldRestoreMenuFocusRef.current = false;
+    }
+  }, [isActionsMenuOpen]);
+
+  useEffect(() => {
+    if (isActionsMenuOpen && pendingActionsMenuFocusIndexRef.current != null) {
+      focusActionsMenuItem(pendingActionsMenuFocusIndexRef.current);
+      pendingActionsMenuFocusIndexRef.current = null;
+    }
+  }, [isActionsMenuOpen]);
+
+  useEffect(() => {
+    if (!isActionsMenuOpen) return undefined;
+
+    function handleMouseDown(e) {
+      if (actionsMenuContainerRef.current && !actionsMenuContainerRef.current.contains(e.target)) {
+        closeActionsMenu();
+      }
+    }
+
+    function handleKeyDown(e) {
+      if (e.key === "Escape") {
+        closeActionsMenu({ returnFocus: true });
+      }
+    }
+
+    document.addEventListener("mousedown", handleMouseDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", handleMouseDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [isActionsMenuOpen]);
+
+  const availableKinds = KIND_ORDER.filter((k) => safeEvents.some((e) => (e.kind ?? "system") === k));
+  const activeKind =
+    selectedKind !== "all" && !availableKinds.includes(selectedKind) ? "all" : selectedKind;
+  const titleSlug = title.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+  const sectionHeadingId = `${titleSlug}-heading`;
+  const navigationHelpId = `${titleSlug}-navigation-help`;
+  const actionsMenuId = `${titleSlug}-actions-menu`;
+  const actionsMenuToggleId = `${titleSlug}-actions-toggle`;
+  const headerActions = [];
+
+  const filteredEvents = filterRecentEventsByKind(safeEvents, activeKind);
+  const entityScopedEvents = filteredEvents.filter((event) =>
+    recentEventMatchesEntityFilter(event, entityFilter),
+  );
+  const groupedEvents = groupRecentEvents(entityScopedEvents).slice(0, maxGroups);
+  const hasFocusControls = (focusedEventId != null || entityFilter != null) && onClearFocus;
+  const entityFilterKey = entityFilter
+    ? `${entityFilter.type}:${entityFilter.label}:${entityFilter.cellIndex ?? ""}:${(entityFilter.playerIds ?? []).join(",")}`
+    : "all";
+  const visibleFreshEventIds = entityScopedEvents
+    .filter((event) => freshEventIds[event.event_id])
+    .map((event) => event.event_id);
+  const visibleFreshKey = visibleFreshEventIds.join(",");
+  const announcementScopeLabel = formatRecentEventsAnnouncementScope(activeKind, entityFilter);
+  const clearFocusScopeLabel =
+    activeKind !== "all" ? `${formatRecentEventKind(activeKind).toLowerCase()} events` : null;
+
+  function queueLiveAnnouncement(message) {
+    if (!liveStatusRef.current || !message) {
+      return;
+    }
+
+    if (liveAnnouncementFrameRef.current != null) {
+      window.cancelAnimationFrame(liveAnnouncementFrameRef.current);
+      liveAnnouncementFrameRef.current = null;
+    }
+
+    liveStatusRef.current.textContent = "";
+    liveAnnouncementFrameRef.current = window.requestAnimationFrame(() => {
+      if (liveStatusRef.current) {
+        liveStatusRef.current.textContent = message;
+      }
+      liveAnnouncementFrameRef.current = null;
+    });
+  }
+
+  useEffect(() => {
+    const currentSnapshot = {
+      activeKind,
+      clearFocusAnnouncementId,
+      entityFilterKey,
+      visibleFreshKey,
+      eventCount: entityScopedEvents.length,
+      groupCount: groupedEvents.length,
+    };
+
+    const previousSnapshot = previousLiveSnapshotRef.current;
+    previousLiveSnapshotRef.current = currentSnapshot;
+
+    if (!announceUpdates || !previousSnapshot || !liveStatusRef.current) {
+      return undefined;
+    }
+
+    const filterChanged =
+      previousSnapshot.activeKind !== activeKind || previousSnapshot.entityFilterKey !== entityFilterKey;
+    const clearFocusTriggered =
+      clearFocusAnnouncementId > 0 &&
+      previousSnapshot.clearFocusAnnouncementId !== clearFocusAnnouncementId;
+    const freshEventsChanged = visibleFreshKey !== previousSnapshot.visibleFreshKey && visibleFreshEventIds.length > 0;
+
+    if ((!filterChanged || clearFocusTriggered) && !freshEventsChanged) {
+      return undefined;
+    }
+
+    let announcement = "";
+
+    if (filterChanged) {
+      if (entityScopedEvents.length === 0) {
+        announcement = `Recent events updated for ${announcementScopeLabel}. No events currently match this view.`;
+      } else {
+        announcement = `Recent events updated for ${announcementScopeLabel}. Showing ${getCountLabel(entityScopedEvents.length, "event")} in ${getCountLabel(groupedEvents.length, "group")}.`;
+      }
+    } else if (freshEventsChanged) {
+      announcement = `${getCountLabel(visibleFreshEventIds.length, "new event")} in ${announcementScopeLabel}.`;
+    }
+
+    if (!announcement) {
+      return undefined;
+    }
+
+    queueLiveAnnouncement(announcement);
+
+    return () => {
+      if (liveAnnouncementFrameRef.current != null) {
+        window.cancelAnimationFrame(liveAnnouncementFrameRef.current);
+        liveAnnouncementFrameRef.current = null;
+      }
+    };
+  }, [
+    activeKind,
+    announceUpdates,
+    announcementScopeLabel,
+    clearFocusAnnouncementId,
+    entityFilterKey,
+    entityScopedEvents.length,
+    groupedEvents.length,
+    visibleFreshEventIds.length,
+    visibleFreshKey,
+  ]);
+
+  useEffect(() => {
+    const previousClearFocusAnnouncementId = previousLiveSnapshotRef.current?.clearFocusAnnouncementId ?? 0;
+
+    if (
+      !announceUpdates ||
+      !liveStatusRef.current ||
+      clearFocusAnnouncementId === 0 ||
+      clearFocusAnnouncementId === previousClearFocusAnnouncementId
+    ) {
+      return undefined;
+    }
+
+    queueLiveAnnouncement(
+      clearFocusScopeLabel
+        ? `Recent events focus cleared. Showing ${clearFocusScopeLabel}.`
+        : "Recent events focus cleared.",
+    );
+
+    return () => {
+      if (liveAnnouncementFrameRef.current != null) {
+        window.cancelAnimationFrame(liveAnnouncementFrameRef.current);
+        liveAnnouncementFrameRef.current = null;
+      }
+    };
+  }, [announceUpdates, clearFocusAnnouncementId, clearFocusScopeLabel]);
+
+  if (showNavigationHelp && onToggleNavigationHelp) {
+    headerActions.push({
+      key: "toggle-help",
+      label: isNavigationHelpCollapsed ? "Show help" : "Hide help",
+      className: "recent-events-help-toggle",
+      ariaExpanded: !isNavigationHelpCollapsed,
+      ariaControls: navigationHelpId,
+    });
+  }
+
+  if (showNavigationHelp && onResetNavigationHelp) {
+    headerActions.push({
+      key: "reset-help",
+      label: "Reset UI hints",
+      className: "recent-events-reset-hints",
+    });
+  }
+
+  if (hasFocusControls) {
+    headerActions.push({
+      key: "clear-focus",
+      label: "Clear focus",
+      className: "recent-events-clear-focus",
+    });
+  }
+
+  function handleHeaderAction(actionKey) {
+    if (actionKey === "toggle-help") {
+      onToggleNavigationHelp?.();
+    } else if (actionKey === "reset-help") {
+      onResetNavigationHelp?.();
+    } else if (actionKey === "clear-focus") {
+      onClearFocus?.();
+    }
+
+    closeActionsMenu({ returnFocus: true });
+  }
+
+  function handleActionsMenuToggleKeyDown(event) {
+    if (headerActions.length === 0) {
+      return;
+    }
+
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      if (isActionsMenuOpen) {
+        closeActionsMenu();
+      } else {
+        openActionsMenu({ focusIndex: 0 });
+      }
+      return;
+    }
+
+    if (event.key === "ArrowDown" || event.key === "Home") {
+      event.preventDefault();
+      openActionsMenu({ focusIndex: 0 });
+      return;
+    }
+
+    if (event.key === "ArrowUp" || event.key === "End") {
+      event.preventDefault();
+      openActionsMenu({ focusIndex: headerActions.length - 1 });
+    }
+  }
+
+  function handleActionsMenuItemKeyDown(event, actionIndex) {
+    if (headerActions.length === 0) {
+      return;
+    }
+
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      focusActionsMenuItem((actionIndex + 1) % headerActions.length);
+      return;
+    }
+
+    if (event.key === "ArrowUp") {
+      event.preventDefault();
+      focusActionsMenuItem((actionIndex - 1 + headerActions.length) % headerActions.length);
+      return;
+    }
+
+    if (event.key === "Home") {
+      event.preventDefault();
+      focusActionsMenuItem(0);
+      return;
+    }
+
+    if (event.key === "End") {
+      event.preventDefault();
+      focusActionsMenuItem(headerActions.length - 1);
+      return;
+    }
+
+    if (event.key === "Tab") {
+      closeActionsMenu({ returnFocus: false });
+    }
+  }
+
+  if (safeEvents.length === 0) {
+    return null;
+  }
+
+  return (
+    <section className="recent-events-card" aria-labelledby={sectionHeadingId}>
+      {announceUpdates && (
+        <div ref={liveStatusRef} className="sr-only" aria-live="polite" aria-atomic="true" />
+      )}
+      <div className="recent-events-header-row">
+        <h3 id={sectionHeadingId}>{title}</h3>
+        {headerActions.length > 0 && (
+          <>
+            <div className="recent-events-header-actions recent-events-header-actions-inline">
+              {headerActions.map((action) => (
+                <button
+                  key={action.key}
+                  type="button"
+                  className={action.className}
+                  onClick={() => handleHeaderAction(action.key)}
+                  aria-expanded={action.ariaExpanded}
+                  aria-controls={action.ariaControls}
+                >
+                  {action.label}
+                </button>
+              ))}
+            </div>
+            <div className="recent-events-actions-menu" ref={actionsMenuContainerRef}>
+              <button
+                ref={actionsMenuToggleRef}
+                type="button"
+                id={actionsMenuToggleId}
+                className="recent-events-actions-menu-toggle"
+                onClick={() => {
+                  if (isActionsMenuOpen) {
+                    closeActionsMenu();
+                  } else {
+                    openActionsMenu();
+                  }
+                }}
+                onKeyDown={handleActionsMenuToggleKeyDown}
+                aria-haspopup="menu"
+                aria-expanded={isActionsMenuOpen}
+                aria-controls={actionsMenuId}
+                aria-label="More options"
+              >
+                More
+              </button>
+              {isActionsMenuOpen && (
+                <div
+                  id={actionsMenuId}
+                  className="recent-events-actions-menu-panel"
+                  role="menu"
+                  aria-orientation="vertical"
+                  aria-labelledby={actionsMenuToggleId}
+                >
+                  {headerActions.map((action, actionIndex) => (
+                    <button
+                      key={action.key}
+                      ref={(element) => {
+                        actionsMenuItemRefs.current[actionIndex] = element;
+                      }}
+                      type="button"
+                      className={`recent-events-actions-menu-item ${action.className}`}
+                      onClick={() => handleHeaderAction(action.key)}
+                      onKeyDown={(event) => handleActionsMenuItemKeyDown(event, actionIndex)}
+                      role="menuitem"
+                    >
+                      {action.label}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </>
+        )}
+      </div>
+      {availableKinds.length > 1 && (
+        <div className="recent-events-filters" role="group" aria-label="Filter by event type">
+          <button
+            type="button"
+            className={`recent-events-filter ${activeKind === "all" ? "is-active" : ""}`}
+            onClick={() => onSelectKind?.("all")}
+            aria-pressed={activeKind === "all"}
+          >
+            All
+          </button>
+          {availableKinds.map((kind) => (
+            <button
+              key={kind}
+              type="button"
+              className={`recent-events-filter recent-events-filter-${kind} ${
+                activeKind === kind ? "is-active" : ""
+              }`}
+              onClick={() => onSelectKind?.(kind)}
+              aria-pressed={activeKind === kind}
+            >
+              {formatRecentEventKind(kind)}
+            </button>
+          ))}
+        </div>
+      )}
+      {entityFilter && (
+        <p className="recent-events-context-note">
+          Showing linked events for <strong>{entityFilter.label}</strong>.
+        </p>
+      )}
+      {showNavigationHelp && !isNavigationHelpCollapsed && (
+        <div
+          id={navigationHelpId}
+          className="recent-events-legend"
+          aria-label="Recent events navigation help"
+        >
+          <p className="recent-events-legend-title">How to use</p>
+          <div className="recent-events-legend-items">
+            <span className="recent-events-legend-pill">Click event {"\u2192"} highlight on board</span>
+            <span className="recent-events-legend-pill">Click cell {"\u2192"} filter by cell</span>
+            <span className="recent-events-legend-pill">Click player {"\u2192"} filter by player</span>
+          </div>
+        </div>
+      )}
+      <div className="recent-events-list">
+        {groupedEvents.length === 0 && (
+          <p className="recent-events-empty">
+            No recent events match this focus yet.
+          </p>
+        )}
+        {groupedEvents.map((group) => (
+          (() => {
+            const groupKey = buildRecentEventGroupKey(group);
+            const canCollapse = group.events.length > 2;
+            const groupHasFocus = group.events.some((event) => event.event_id === focusedEventId);
+            const isExpanded = expandedGroups[groupKey] ?? false;
+            const freshEventCount = group.events.filter((event) => freshEventIds[event.event_id]).length;
+            const visibleEvents = canCollapse && !isExpanded ? group.events.slice(0, 2) : group.events;
+            const hiddenCount = group.events.length - visibleEvents.length;
+
+            const clusterRegionId = `${groupKey}-cluster`;
+
+            return (
+              <article
+                key={groupKey}
+                className={`recent-event-item ${group.events.length > 1 ? "is-grouped" : ""} ${
+                  freshEventCount > 0 ? "is-fresh" : ""
+                } ${groupHasFocus ? "is-focused" : ""}`}
+                aria-label={group.events[0].summary}
+              >
+                <div className="recent-event-header">
+                  <p className="recent-event-meta">{formatRecentEventTurnLabel(group)}</p>
+                  <div className="recent-event-badges">
+                    <span className={`recent-event-kind recent-event-kind-${group.kind}`}>
+                      {formatRecentEventKind(group.kind)}
+                    </span>
+                    {freshEventCount > 0 && (
+                      <span className="recent-event-new">
+                        {freshEventCount === 1 ? "New" : `${freshEventCount} new`}
+                      </span>
+                    )}
+                    {group.events.length > 1 && (
+                      <span className="recent-event-count" aria-hidden="true">{group.events.length}x</span>
+                    )}
+                    {group.events.length > 1 && (
+                      <span className="sr-only">{group.events.length} events</span>
+                    )}
+                  </div>
+                </div>
+
+                {group.events.length === 1 ? (
+                  (() => {
+                    const event = group.events[0];
+                    const isActionable = Boolean(onFocusEvent) && hasRecentEventReferences(event);
+                    const EntryTag = isActionable ? "button" : "div";
+
+                    return (
+                      <EntryTag
+                        type={isActionable ? "button" : undefined}
+                        className={`recent-event-entry ${isActionable ? "is-actionable" : ""} ${
+                          focusedEventId === event.event_id ? "is-focused" : ""
+                        }`}
+                        onClick={isActionable ? () => onFocusEvent(event) : undefined}
+                        aria-pressed={isActionable ? focusedEventId === event.event_id : undefined}
+                      >
+                        <p className="recent-event-summary">{event.summary}</p>
+                        {event.details.length > 1 && (
+                          <div className="recent-event-details">
+                            {event.details.slice(1).map((detail, detailIndex) => (
+                              <p key={detailIndex}>{detail}</p>
+                            ))}
+                          </div>
+                        )}
+                      </EntryTag>
+                    );
+                  })()
+                ) : (
+                  <>
+                    <div className="recent-event-cluster" id={clusterRegionId}>
+                      {visibleEvents.map((event, eventIndex) => {
+                        const isActionable = Boolean(onFocusEvent) && hasRecentEventReferences(event);
+                        const EntryTag = isActionable ? "button" : "div";
+
+                        return (
+                          <EntryTag
+                            key={event.event_id ?? `${event.turn_number}-${eventIndex}-${event.summary}`}
+                            type={isActionable ? "button" : undefined}
+                            className={`recent-event-cluster-item ${
+                              freshEventIds[event.event_id] ? "is-fresh" : ""
+                            } ${isActionable ? "is-actionable" : ""} ${
+                              focusedEventId === event.event_id ? "is-focused" : ""
+                            }`}
+                            onClick={isActionable ? () => onFocusEvent(event) : undefined}
+                            aria-pressed={isActionable ? focusedEventId === event.event_id : undefined}
+                          >
+                            <p className="recent-event-cluster-turn">Turn {event.turn_number}</p>
+                            <p className="recent-event-summary">{event.summary}</p>
+                            {event.details.length > 1 && (
+                              <div className="recent-event-details">
+                                {event.details.slice(1).map((detail, detailIndex) => (
+                                  <p key={detailIndex}>{detail}</p>
+                                ))}
+                              </div>
+                            )}
+                          </EntryTag>
+                        );
+                      })}
+                    </div>
+
+                    {canCollapse && (
+                      <button
+                        type="button"
+                        className="recent-event-toggle"
+                        onClick={() => onToggleGroup?.(groupKey)}
+                        aria-expanded={isExpanded}
+                        aria-controls={clusterRegionId}
+                        aria-label={
+                          isExpanded
+                            ? "Show fewer events in this group"
+                            : `Show ${hiddenCount} more events in this group`
+                        }
+                      >
+                        {isExpanded ? "Show less" : `Show ${hiddenCount} more`}
+                      </button>
+                    )}
+                  </>
+                )}
+              </article>
+            );
+          })()
+        ))}
+      </div>
+    </section>
+  );
+}
+
 function getBoardPlacement(index) {
   if (index >= 0 && index <= 10) {
     return { row: 11, column: 11 - index };
@@ -150,6 +984,21 @@ function getBoardSide(index) {
   return "right";
 }
 
+function splitJailOccupants(players, inJailByPlayerId) {
+  const jailPlayers = [];
+  const visitingPlayers = [];
+
+  for (const player of players) {
+    if (inJailByPlayerId?.[player.player_id]) {
+      jailPlayers.push(player);
+    } else {
+      visitingPlayers.push(player);
+    }
+  }
+
+  return { jailPlayers, visitingPlayers };
+}
+
 function App() {
   const [message, setMessage] = useState("Loading...");
   const [nickname, setNickname] = useState("");
@@ -159,10 +1008,29 @@ function App() {
   const [playerId, setPlayerId] = useState("");
   const [playerToken, setPlayerToken] = useState("");
   const [currentRoom, setCurrentRoom] = useState(null);
+  const [recentEventsSelectedKinds, setRecentEventsSelectedKinds] = useState({});
+  const [recentEventsExpandedGroups, setRecentEventsExpandedGroups] = useState({});
+  const [freshRecentEventIds, setFreshRecentEventIds] = useState({});
+  const [focusedRecentEventId, setFocusedRecentEventId] = useState(null);
+  const [focusedEventCellIndex, setFocusedEventCellIndex] = useState(null);
+  const [focusedEventPlayerIds, setFocusedEventPlayerIds] = useState([]);
+  const [recentEventsEntityFilter, setRecentEventsEntityFilter] = useState(null);
+  const [recentEventsClearFocusAnnouncementId, setRecentEventsClearFocusAnnouncementId] = useState(0);
+  const [isRecentEventsHelpCollapsed, setIsRecentEventsHelpCollapsed] = useState(
+    getDefaultRecentEventsHelpCollapsed,
+  );
+  const [hasStoredHelpPreference, setHasStoredHelpPreference] = useState(
+    () => loadStoredRecentEventsHelpCollapsed() !== null,
+  );
   const [selectedTradeTargetId, setSelectedTradeTargetId] = useState("");
   const [selectedTradePosition, setSelectedTradePosition] = useState("");
   const [tradeCashAmount, setTradeCashAmount] = useState("0");
   const [auctionBidAmount, setAuctionBidAmount] = useState("1");
+  const recentEventsRoomCodeRef = useRef(null);
+  const highestSeenRecentEventIdRef = useRef(0);
+  const recentEventHighlightTimeoutsRef = useRef({});
+  const boardCellRefs = useRef({});
+  const playerCardRefs = useRef({});
   const currentRoomCode = currentRoom?.room_code ?? null;
   const isLobbyOpen = currentRoom?.status === "lobby";
   const isGameOpen = currentRoom?.status === "in_game";
@@ -175,6 +1043,8 @@ function App() {
   const pendingTrade = currentRoom?.game?.pending_trade ?? null;
   const pendingAuction = currentRoom?.game?.pending_auction ?? null;
   const pendingBankruptcy = currentRoom?.game?.pending_bankruptcy ?? null;
+  const lastBankruptcySummary = currentRoom?.game?.last_bankruptcy_summary ?? null;
+  const recentEvents = currentRoom?.game?.recent_events ?? EMPTY_RECENT_EVENTS;
   const lastDrawnCard = currentRoom?.game?.last_drawn_card ?? null;
   const winnerId = currentRoom?.game?.winner_id ?? null;
   const winnerPlayer =
@@ -262,8 +1132,184 @@ function App() {
     pendingBankruptcy?.creditor_type === "player"
       ? pendingBankruptcyCreditor?.nickname ?? "another player"
       : "the bank";
+  const priorRecentEvents = recentEvents.slice(1);
+  const gameRecentEventsKind = getRecentEventsSelectedKind("game");
+  const gameScopedRecentEvents = filterRecentEventsByKind(priorRecentEvents, gameRecentEventsKind);
   const minimumAuctionBid = pendingAuction ? Math.max(1, pendingAuction.current_bid + 1) : 1;
   const currentPlayerCash = currentRoom?.game?.cash?.[playerId] ?? 0;
+  const focusedPlayerIdSet = new Set(focusedEventPlayerIds);
+  const cellRecentEventCounts = {};
+  const playerRecentEventCounts = {};
+
+  for (const event of gameScopedRecentEvents) {
+    if (Number.isInteger(event.cell_index)) {
+      cellRecentEventCounts[event.cell_index] = (cellRecentEventCounts[event.cell_index] ?? 0) + 1;
+    }
+
+    const relatedPlayerIds = [...new Set([event.player_id, event.target_player_id].filter(Boolean))];
+    for (const relatedPlayerId of relatedPlayerIds) {
+      playerRecentEventCounts[relatedPlayerId] = (playerRecentEventCounts[relatedPlayerId] ?? 0) + 1;
+    }
+  }
+
+  function getRecentEventsSelectedKind(cardKey) {
+    return recentEventsSelectedKinds[cardKey] ?? "all";
+  }
+
+  function getRecentEventsExpandedState(cardKey) {
+    return recentEventsExpandedGroups[cardKey] ?? {};
+  }
+
+  function clearRecentEventHighlightTimeouts() {
+    Object.values(recentEventHighlightTimeoutsRef.current).forEach((timeoutId) => {
+      window.clearTimeout(timeoutId);
+    });
+    recentEventHighlightTimeoutsRef.current = {};
+  }
+
+  function resetRecentEventsUiState() {
+    setRecentEventsSelectedKinds({});
+    setRecentEventsExpandedGroups({});
+    setFreshRecentEventIds({});
+    setFocusedRecentEventId(null);
+    setFocusedEventCellIndex(null);
+    setFocusedEventPlayerIds([]);
+    setRecentEventsEntityFilter(null);
+    setRecentEventsClearFocusAnnouncementId(0);
+    setIsRecentEventsHelpCollapsed(getDefaultRecentEventsHelpCollapsed());
+    setHasStoredHelpPreference(loadStoredRecentEventsHelpCollapsed() !== null);
+    clearRecentEventHighlightTimeouts();
+    recentEventsRoomCodeRef.current = null;
+    highestSeenRecentEventIdRef.current = 0;
+  }
+
+  function handleRecentEventsHelpToggle() {
+    setIsRecentEventsHelpCollapsed((current) => {
+      const nextValue = !current;
+      saveStoredRecentEventsHelpCollapsed(nextValue);
+      setHasStoredHelpPreference(true);
+      return nextValue;
+    });
+  }
+
+  function handleRecentEventsHelpReset() {
+    clearStoredRecentEventsHelpCollapsed();
+    setHasStoredHelpPreference(false);
+    setIsRecentEventsHelpCollapsed(getResponsiveRecentEventsHelpCollapsed());
+  }
+
+  function handleRecentEventsKindChange(cardKey, kind) {
+    setRecentEventsSelectedKinds((current) => {
+      if (current[cardKey] === kind) {
+        return current;
+      }
+
+      return {
+        ...current,
+        [cardKey]: kind,
+      };
+    });
+  }
+
+  function handleRecentEventsGroupToggle(cardKey, groupKey) {
+    setRecentEventsExpandedGroups((current) => {
+      const cardExpandedGroups = current[cardKey] ?? {};
+
+      return {
+        ...current,
+        [cardKey]: {
+          ...cardExpandedGroups,
+          [groupKey]: !cardExpandedGroups[groupKey],
+        },
+      };
+    });
+  }
+
+  function clearRecentEventFocus() {
+    const hadFocusState =
+      focusedRecentEventId != null ||
+      focusedEventCellIndex != null ||
+      focusedEventPlayerIds.length > 0 ||
+      recentEventsEntityFilter != null;
+
+    setFocusedRecentEventId(null);
+    setFocusedEventCellIndex(null);
+    setFocusedEventPlayerIds([]);
+    setRecentEventsEntityFilter(null);
+
+    if (hadFocusState) {
+      setRecentEventsClearFocusAnnouncementId((current) => current + 1);
+    }
+  }
+
+  function scrollToRecentEventTarget(event) {
+    const hasCellTarget = Number.isInteger(event.cell_index);
+    const primaryPlayerId = event.player_id ?? event.target_player_id ?? null;
+    const targetElement =
+      (hasCellTarget ? boardCellRefs.current[event.cell_index] : null) ??
+      (primaryPlayerId ? playerCardRefs.current[primaryPlayerId] : null);
+
+    targetElement?.scrollIntoView({
+      behavior: "smooth",
+      block: "center",
+      inline: "nearest",
+    });
+  }
+
+  function handleRecentEventFocus(event) {
+    if (!hasRecentEventReferences(event)) {
+      return;
+    }
+
+    if (focusedRecentEventId === event.event_id) {
+      clearRecentEventFocus();
+      return;
+    }
+
+    const playerIds = [...new Set([event.player_id, event.target_player_id].filter(Boolean))];
+
+    setRecentEventsEntityFilter(null);
+    setFocusedRecentEventId(event.event_id ?? null);
+    setFocusedEventCellIndex(Number.isInteger(event.cell_index) ? event.cell_index : null);
+    setFocusedEventPlayerIds(playerIds);
+    scrollToRecentEventTarget(event);
+  }
+
+  function handleBoardCellFocus(cell) {
+    if (recentEventsEntityFilter?.type === "cell" && recentEventsEntityFilter.cellIndex === cell.index) {
+      clearRecentEventFocus();
+      return;
+    }
+
+    setFocusedRecentEventId(null);
+    setFocusedEventCellIndex(cell.index);
+    setFocusedEventPlayerIds([]);
+    setRecentEventsEntityFilter({
+      type: "cell",
+      cellIndex: cell.index,
+      label: cell.name,
+    });
+  }
+
+  function handlePlayerCardFocus(player) {
+    if (
+      recentEventsEntityFilter?.type === "player" &&
+      recentEventsEntityFilter.playerIds.length === 1 &&
+      recentEventsEntityFilter.playerIds[0] === player.player_id
+    ) {
+      clearRecentEventFocus();
+      return;
+    }
+
+    setFocusedRecentEventId(null);
+    setFocusedEventCellIndex(null);
+    setFocusedEventPlayerIds([player.player_id]);
+    setRecentEventsEntityFilter({
+      type: "player",
+      playerIds: [player.player_id],
+      label: player.nickname,
+    });
+  }
 
   function getCellByPosition(position) {
     return boardCells.find((cell) => cell.index === position) ?? null;
@@ -569,6 +1615,18 @@ function App() {
         setPlayerId("");
         setPlayerToken("");
         setCurrentRoom(null);
+        setRecentEventsSelectedKinds({});
+        setRecentEventsExpandedGroups({});
+        setFreshRecentEventIds({});
+        setFocusedRecentEventId(null);
+        setFocusedEventCellIndex(null);
+        setFocusedEventPlayerIds([]);
+        Object.values(recentEventHighlightTimeoutsRef.current).forEach((timeoutId) => {
+          window.clearTimeout(timeoutId);
+        });
+        recentEventHighlightTimeoutsRef.current = {};
+        recentEventsRoomCodeRef.current = null;
+        highestSeenRecentEventIdRef.current = 0;
         setStatus("Saved session expired. Create or join a room again.");
       })
       .finally(() => {
@@ -578,6 +1636,18 @@ function App() {
 
   useEffect(() => {
     if (!currentRoomCode) {
+      setRecentEventsSelectedKinds({});
+      setRecentEventsExpandedGroups({});
+      setFreshRecentEventIds({});
+      setFocusedRecentEventId(null);
+      setFocusedEventCellIndex(null);
+      setFocusedEventPlayerIds([]);
+      Object.values(recentEventHighlightTimeoutsRef.current).forEach((timeoutId) => {
+        window.clearTimeout(timeoutId);
+      });
+      recentEventHighlightTimeoutsRef.current = {};
+      recentEventsRoomCodeRef.current = null;
+      highestSeenRecentEventIdRef.current = 0;
       return undefined;
     }
 
@@ -587,6 +1657,18 @@ function App() {
           if (response.status === 404) {
             clearStoredSession();
             setCurrentRoom(null);
+            setRecentEventsSelectedKinds({});
+            setRecentEventsExpandedGroups({});
+            setFreshRecentEventIds({});
+            setFocusedRecentEventId(null);
+            setFocusedEventCellIndex(null);
+            setFocusedEventPlayerIds([]);
+            Object.values(recentEventHighlightTimeoutsRef.current).forEach((timeoutId) => {
+              window.clearTimeout(timeoutId);
+            });
+            recentEventHighlightTimeoutsRef.current = {};
+            recentEventsRoomCodeRef.current = null;
+            highestSeenRecentEventIdRef.current = 0;
             setPlayerId("");
             setPlayerToken("");
             setStatus("The room no longer exists.");
@@ -601,6 +1683,86 @@ function App() {
       clearInterval(intervalId);
     };
   }, [currentRoomCode]);
+
+  useEffect(() => {
+    if (!currentRoomCode) {
+      return;
+    }
+
+    const currentEventIds = recentEvents
+      .map((event) => event.event_id)
+      .filter((eventId) => Number.isInteger(eventId));
+
+    if (recentEventsRoomCodeRef.current !== currentRoomCode) {
+      recentEventsRoomCodeRef.current = currentRoomCode;
+      highestSeenRecentEventIdRef.current =
+        currentEventIds.length > 0 ? Math.max(...currentEventIds) : 0;
+      setFreshRecentEventIds({});
+      clearRecentEventHighlightTimeouts();
+      return;
+    }
+
+    const highestEventId = currentEventIds.length > 0 ? Math.max(...currentEventIds) : 0;
+    const newEventIds = currentEventIds.filter(
+      (eventId) => eventId > highestSeenRecentEventIdRef.current,
+    );
+
+    highestSeenRecentEventIdRef.current = Math.max(
+      highestSeenRecentEventIdRef.current,
+      highestEventId,
+    );
+
+    if (newEventIds.length === 0) {
+      return;
+    }
+
+    setFreshRecentEventIds((current) => {
+      const next = { ...current };
+      for (const eventId of newEventIds) {
+        next[eventId] = true;
+      }
+      return next;
+    });
+
+    for (const eventId of newEventIds) {
+      if (recentEventHighlightTimeoutsRef.current[eventId]) {
+        window.clearTimeout(recentEventHighlightTimeoutsRef.current[eventId]);
+      }
+
+      recentEventHighlightTimeoutsRef.current[eventId] = window.setTimeout(() => {
+        setFreshRecentEventIds((current) => {
+          if (!current[eventId]) {
+            return current;
+          }
+
+          const next = { ...current };
+          delete next[eventId];
+          return next;
+        });
+
+        delete recentEventHighlightTimeoutsRef.current[eventId];
+      }, RECENT_EVENT_HIGHLIGHT_MS);
+    }
+  }, [currentRoomCode, recentEvents]);
+
+  useEffect(() => {
+    return () => {
+      clearRecentEventHighlightTimeouts();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (focusedRecentEventId == null) {
+      return;
+    }
+
+    if (!recentEvents.some((event) => event.event_id === focusedRecentEventId)) {
+      setFocusedRecentEventId(null);
+      setFocusedEventCellIndex(null);
+      setFocusedEventPlayerIds([]);
+      setRecentEventsEntityFilter(null);
+    }
+  }, [focusedRecentEventId, recentEvents]);
 
   async function handleCreateRoom() {
     const trimmedNickname = nickname.trim();
@@ -953,6 +2115,7 @@ function App() {
       setPlayerId("");
       setPlayerToken("");
       setCurrentRoom(null);
+      resetRecentEventsUiState();
       setStatus("You left the match view.");
       return;
     }
@@ -989,6 +2152,7 @@ function App() {
       setPlayerId("");
       setPlayerToken("");
       setCurrentRoom(null);
+      resetRecentEventsUiState();
       setStatus(data.room_deleted ? "You left. The room was deleted." : "You left the room.");
     } catch (error) {
       setStatus(error.message);
@@ -1722,6 +2886,21 @@ function App() {
               )}
             </section>
 
+            {lastBankruptcySummary && (
+              <BankruptcySummaryCard summary={lastBankruptcySummary} title="Latest bankruptcy recap" />
+            )}
+
+            <RecentEventsCard
+              events={recentEvents}
+              title="Recent events"
+              maxGroups={4}
+              selectedKind={getRecentEventsSelectedKind("finished")}
+              expandedGroups={getRecentEventsExpandedState("finished")}
+              freshEventIds={freshRecentEventIds}
+              onSelectKind={(kind) => handleRecentEventsKindChange("finished", kind)}
+              onToggleGroup={(groupKey) => handleRecentEventsGroupToggle("finished", groupKey)}
+            />
+
             <div className="room-actions">
               <button
                 type="button"
@@ -1760,6 +2939,28 @@ function App() {
                 </div>
               )}
             </section>
+
+            {lastBankruptcySummary && (
+              <BankruptcySummaryCard
+                summary={lastBankruptcySummary}
+                title={
+                  lastBankruptcySummary.debtor_player_id === playerId
+                    ? "Your bankruptcy recap"
+                    : "Latest bankruptcy recap"
+                }
+              />
+            )}
+
+            <RecentEventsCard
+              events={priorRecentEvents}
+              title="Recent events before your elimination"
+              maxGroups={4}
+              selectedKind={getRecentEventsSelectedKind("eliminated")}
+              expandedGroups={getRecentEventsExpandedState("eliminated")}
+              freshEventIds={freshRecentEventIds}
+              onSelectKind={(kind) => handleRecentEventsKindChange("eliminated", kind)}
+              onToggleGroup={(groupKey) => handleRecentEventsGroupToggle("eliminated", groupKey)}
+            />
 
             <div className="room-actions">
               <button
@@ -1859,6 +3060,34 @@ function App() {
                       </div>
                     )}
                   </section>
+
+                  {lastBankruptcySummary && (
+                    <BankruptcySummaryCard
+                      summary={lastBankruptcySummary}
+                      title="Latest bankruptcy recap"
+                    />
+                  )}
+
+                  <RecentEventsCard
+                    events={priorRecentEvents}
+                    title="Recent events"
+                    maxGroups={4}
+                    selectedKind={getRecentEventsSelectedKind("game")}
+                    expandedGroups={getRecentEventsExpandedState("game")}
+                    freshEventIds={freshRecentEventIds}
+                    focusedEventId={focusedRecentEventId}
+                    entityFilter={recentEventsEntityFilter}
+                    onSelectKind={(kind) => handleRecentEventsKindChange("game", kind)}
+                    onToggleGroup={(groupKey) => handleRecentEventsGroupToggle("game", groupKey)}
+                    onFocusEvent={handleRecentEventFocus}
+                    onClearFocus={clearRecentEventFocus}
+                    showNavigationHelp
+                    isNavigationHelpCollapsed={isRecentEventsHelpCollapsed}
+                    onToggleNavigationHelp={handleRecentEventsHelpToggle}
+                    onResetNavigationHelp={hasStoredHelpPreference ? handleRecentEventsHelpReset : undefined}
+                    announceUpdates
+                    clearFocusAnnouncementId={recentEventsClearFocusAnnouncementId}
+                  />
 
                   {lastDrawnCard && (
                     <section className="drawn-card board-center-section">
@@ -2401,22 +3630,54 @@ function App() {
                 </section>
 
                 {boardCells.map((cell) => {
-                  const occupants = currentRoom.players.filter(
-                    (player) => (currentRoom.game?.positions[player.player_id] ?? 0) === cell.index,
-                  );
+                  const occupants = currentRoom.players.filter((player) => {
+                    const playerPosition = currentRoom.game?.positions?.[player.player_id];
+                    return Number.isInteger(playerPosition) && playerPosition === cell.index;
+                  });
+                  const { jailPlayers, visitingPlayers } =
+                    cell.index === JAIL_POSITION
+                      ? splitJailOccupants(occupants, currentRoom.game?.in_jail ?? {})
+                      : { jailPlayers: [], visitingPlayers: occupants };
                   const { row, column } = getBoardPlacement(cell.index);
                   const boardSide = getBoardSide(cell.index);
                   const groupClass = cell.color_group ? `cell-group-${cell.color_group}` : "";
+                  const linkedEventCount = cellRecentEventCounts[cell.index] ?? 0;
+                  const linkedEventLabel = formatLinkedEventLabel(linkedEventCount, cell.name);
 
                   return (
                     <article
                       key={cell.index}
+                      ref={(element) => {
+                        if (element) {
+                          boardCellRefs.current[cell.index] = element;
+                        } else {
+                          delete boardCellRefs.current[cell.index];
+                        }
+                      }}
                       className={`cell-tile cell-side-${boardSide} ${groupClass} ${
                         lastLandedCell?.index === cell.index ? "is-landed" : ""
-                      }`}
+                      } ${focusedEventCellIndex === cell.index ? "is-focused" : ""} is-actionable`}
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => handleBoardCellFocus(cell)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" || event.key === " ") {
+                          event.preventDefault();
+                          handleBoardCellFocus(cell);
+                        }
+                      }}
                       style={{ gridRow: row, gridColumn: column }}
                     >
                       <span className={`cell-band cell-band-${cell.cell_type}`} aria-hidden="true" />
+                      {linkedEventCount > 0 && (
+                        <span
+                          className="cell-event-count-badge"
+                          title={linkedEventLabel}
+                          aria-label={linkedEventLabel}
+                        >
+                          {formatLinkedEventCount(linkedEventCount)}
+                        </span>
+                      )}
                       <h4>{cell.name}</h4>
                       {propertyMortgaged[cell.index] && (
                         <p className="cell-mortgaged-badge">Mortgaged</p>
@@ -2426,14 +3687,94 @@ function App() {
                           Level {propertyLevels[cell.index]}
                         </p>
                       )}
-                      {occupants.length > 0 && (
-                        <div className="cell-occupants">
-                          {occupants.map((player) => (
-                            <span key={player.player_id} className="occupant-chip">
-                              {player.nickname}
-                            </span>
-                          ))}
+                      {cell.index === JAIL_POSITION ? (
+                        <div className="cell-jail-layout">
+                          {visitingPlayers.length > 0 && (
+                            <div className="cell-occupants cell-visiting-zone">
+                          {visitingPlayers.map((player, occupantIndex) => {
+                            const colorIndex = currentRoom.players.findIndex(
+                              (candidate) => candidate.player_id === player.player_id,
+                            );
+                            const tokenColor =
+                              PLAYER_TOKEN_COLORS[colorIndex % PLAYER_TOKEN_COLORS.length];
+
+                            return (
+                              <div
+                                key={player.player_id}
+                                    className={`player-token ${
+                                      currentTurnPlayerId === player.player_id ? "is-active-turn" : ""
+                                    }`}
+                                style={{
+                                  "--player-token-color": tokenColor,
+                                  zIndex: Math.max(1, 8 - occupantIndex),
+                                }}
+                                title={player.nickname}
+                                aria-label={`${player.nickname} token`}
+                                  >
+                                    {getPlayerTokenLabel(player.nickname)}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                          {jailPlayers.length > 0 && (
+                            <div className="cell-occupants cell-jail-zone">
+                          {jailPlayers.map((player, occupantIndex) => {
+                            const colorIndex = currentRoom.players.findIndex(
+                              (candidate) => candidate.player_id === player.player_id,
+                            );
+                            const tokenColor =
+                              PLAYER_TOKEN_COLORS[colorIndex % PLAYER_TOKEN_COLORS.length];
+
+                            return (
+                              <div
+                                key={player.player_id}
+                                    className={`player-token ${
+                                      currentTurnPlayerId === player.player_id ? "is-active-turn" : ""
+                                    }`}
+                                style={{
+                                  "--player-token-color": tokenColor,
+                                  zIndex: Math.max(1, 8 - occupantIndex),
+                                }}
+                                title={player.nickname}
+                                aria-label={`${player.nickname} token`}
+                                  >
+                                    {getPlayerTokenLabel(player.nickname)}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
                         </div>
+                      ) : (
+                        occupants.length > 0 && (
+                          <div className="cell-occupants">
+                            {occupants.map((player, occupantIndex) => {
+                              const colorIndex = currentRoom.players.findIndex(
+                                (candidate) => candidate.player_id === player.player_id,
+                              );
+                              const tokenColor =
+                                PLAYER_TOKEN_COLORS[colorIndex % PLAYER_TOKEN_COLORS.length];
+
+                              return (
+                                <div
+                                  key={player.player_id}
+                                  className={`player-token ${
+                                    currentTurnPlayerId === player.player_id ? "is-active-turn" : ""
+                                  }`}
+                                  style={{
+                                    "--player-token-color": tokenColor,
+                                    zIndex: Math.max(1, 8 - occupantIndex),
+                                  }}
+                                  title={player.nickname}
+                                  aria-label={`${player.nickname} token`}
+                                >
+                                  {getPlayerTokenLabel(player.nickname)}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )
                       )}
                     </article>
                   );
@@ -2443,11 +3784,48 @@ function App() {
 
             <section className="board-grid">
               {currentRoom.players.map((player) => (
+                (() => {
+                  const linkedEventCount = playerRecentEventCounts[player.player_id] ?? 0;
+                  const linkedEventLabel = formatLinkedEventLabel(
+                    linkedEventCount,
+                    player.nickname,
+                  );
+
+                  return (
                 <article
                   key={player.player_id}
-                  className={`board-card ${player.player_id === playerId ? "is-you" : ""}`}
+                  ref={(element) => {
+                    if (element) {
+                      playerCardRefs.current[player.player_id] = element;
+                    } else {
+                      delete playerCardRefs.current[player.player_id];
+                    }
+                  }}
+                  className={`board-card ${player.player_id === playerId ? "is-you" : ""} ${
+                    focusedPlayerIdSet.has(player.player_id) ? "is-focused" : ""
+                  }`}
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => handlePlayerCardFocus(player)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      handlePlayerCardFocus(player);
+                    }
+                  }}
                 >
-                  <h3>{player.nickname}</h3>
+                  <div className="board-card-header">
+                    <h3>{player.nickname}</h3>
+                    {linkedEventCount > 0 && (
+                      <span
+                        className="board-card-event-count"
+                        title={linkedEventLabel}
+                        aria-label={linkedEventLabel}
+                      >
+                        {formatLinkedEventCount(linkedEventCount)}
+                      </span>
+                    )}
+                  </div>
                   <p>
                     Position:{" "}
                     <strong>{currentRoom.game?.positions[player.player_id] ?? 0}</strong>
@@ -2528,6 +3906,8 @@ function App() {
                     </strong>
                   </p>
                 </article>
+                  );
+                })()
               ))}
             </section>
           </section>
