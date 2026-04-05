@@ -8,6 +8,8 @@ const MAX_PROPERTY_LEVEL = 4;
 const JAIL_POSITION = 10;
 const PROPERTY_RENT_MULTIPLIERS = [1, 2, 4, 7, 11];
 const RECENT_EVENT_HIGHLIGHT_MS = 4500;
+const TOKEN_MOVE_FEEDBACK_MS = 1200;
+const TOKEN_MOVE_MAX_OFFSET_PX = 26;
 const MOBILE_RECENT_EVENTS_BREAKPOINT = "(max-width: 640px)";
 const EMPTY_RECENT_EVENTS = [];
 const PLAYER_TOKEN_COLORS = ["#d94f3d", "#3b7fd4", "#3aaa5e", "#e09b2a"];
@@ -984,6 +986,36 @@ function getBoardSide(index) {
   return "right";
 }
 
+function clampNumber(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function getTokenMovementOffset(fromPosition, toPosition) {
+  if (
+    !Number.isInteger(fromPosition) ||
+    !Number.isInteger(toPosition) ||
+    fromPosition === toPosition
+  ) {
+    return { x: 0, y: 0 };
+  }
+
+  const fromPlacement = getBoardPlacement(fromPosition);
+  const toPlacement = getBoardPlacement(toPosition);
+
+  return {
+    x: clampNumber(
+      (fromPlacement.column - toPlacement.column) * 10,
+      -TOKEN_MOVE_MAX_OFFSET_PX,
+      TOKEN_MOVE_MAX_OFFSET_PX,
+    ),
+    y: clampNumber(
+      (fromPlacement.row - toPlacement.row) * 10,
+      -TOKEN_MOVE_MAX_OFFSET_PX,
+      TOKEN_MOVE_MAX_OFFSET_PX,
+    ),
+  };
+}
+
 function splitJailOccupants(players, inJailByPlayerId) {
   const jailPlayers = [];
   const visitingPlayers = [];
@@ -1026,9 +1058,12 @@ function App() {
   const [selectedTradePosition, setSelectedTradePosition] = useState("");
   const [tradeCashAmount, setTradeCashAmount] = useState("0");
   const [auctionBidAmount, setAuctionBidAmount] = useState("1");
+  const [movingTokenEffects, setMovingTokenEffects] = useState({});
   const recentEventsRoomCodeRef = useRef(null);
   const highestSeenRecentEventIdRef = useRef(0);
   const recentEventHighlightTimeoutsRef = useRef({});
+  const tokenMovementTimeoutsRef = useRef({});
+  const previousPositionsRef = useRef({});
   const boardCellRefs = useRef({});
   const playerCardRefs = useRef({});
   const currentRoomCode = currentRoom?.room_code ?? null;
@@ -1036,6 +1071,7 @@ function App() {
   const isGameOpen = currentRoom?.status === "in_game";
   const isFinished = currentRoom?.status === "finished";
   const boardCells = currentRoom?.game?.board ?? [];
+  const playerPositions = currentRoom?.game?.positions;
   const propertyOwners = currentRoom?.game?.property_owners ?? {};
   const propertyLevels = currentRoom?.game?.property_levels ?? {};
   const propertyMortgaged = currentRoom?.game?.property_mortgaged ?? {};
@@ -1150,6 +1186,85 @@ function App() {
     for (const relatedPlayerId of relatedPlayerIds) {
       playerRecentEventCounts[relatedPlayerId] = (playerRecentEventCounts[relatedPlayerId] ?? 0) + 1;
     }
+  }
+
+  const movedCellIndexSet = new Set(
+    Object.values(movingTokenEffects)
+      .map((movementEffect) => movementEffect.toPosition)
+      .filter((position) => Number.isInteger(position)),
+  );
+  const inspectedCell = Number.isInteger(focusedEventCellIndex)
+    ? boardCells.find((cell) => cell.index === focusedEventCellIndex) ?? null
+    : null;
+  const inspectedCellLevel = inspectedCell ? propertyLevels[inspectedCell.index] ?? 0 : 0;
+  const inspectedCellMortgaged = inspectedCell
+    ? Boolean(propertyMortgaged[inspectedCell.index])
+    : false;
+  const inspectedCellOwner = inspectedCell
+    ? getPlayerById(propertyOwners[inspectedCell.index])
+    : null;
+  const inspectedCellRentHint = inspectedCell
+    ? getRentHint(inspectedCell, inspectedCellLevel)
+    : null;
+  const inspectedCellOccupants = inspectedCell
+    ? (currentRoom?.players ?? []).filter((player) => playerPositions?.[player.player_id] === inspectedCell.index)
+    : [];
+  const inspectedCellLinkedEventCount = inspectedCell
+    ? cellRecentEventCounts[inspectedCell.index] ?? 0
+    : 0;
+  const inspectedCellJailGroups =
+    inspectedCell?.index === JAIL_POSITION
+      ? splitJailOccupants(inspectedCellOccupants, currentRoom?.game?.in_jail ?? {})
+      : null;
+  const inspectedPlayerId =
+    recentEventsEntityFilter?.type === "player" && recentEventsEntityFilter.playerIds.length === 1
+      ? recentEventsEntityFilter.playerIds[0]
+      : focusedEventPlayerIds.length === 1
+        ? focusedEventPlayerIds[0]
+        : null;
+  const inspectedPlayer = inspectedPlayerId ? getPlayerById(inspectedPlayerId) : null;
+  const inspectedPlayerColor = inspectedPlayer ? getPlayerColor(inspectedPlayer.player_id) : null;
+  const inspectedPlayerPosition = inspectedPlayer ? getPlayerPosition(inspectedPlayer.player_id) : 0;
+  const inspectedPlayerCell = inspectedPlayer ? getPlayerCell(inspectedPlayer.player_id) : null;
+  const inspectedPlayerOwnedCells = inspectedPlayer ? getOwnedCellsByPlayer(inspectedPlayer.player_id) : [];
+  const inspectedPlayerOwnedCellsPreview = inspectedPlayerOwnedCells.slice(0, 3);
+  const inspectedPlayerCash = inspectedPlayer
+    ? currentRoom?.game?.cash?.[inspectedPlayer.player_id] ?? 0
+    : 0;
+  const inspectedPlayerMortgagedCellCount = inspectedPlayer
+    ? getMortgagedOwnedCellCount(inspectedPlayer.player_id)
+    : 0;
+  const inspectedPlayerInJail = inspectedPlayer
+    ? currentRoom?.game?.in_jail?.[inspectedPlayer.player_id] ?? false
+    : false;
+  const inspectedPlayerTurnsInJail = inspectedPlayer
+    ? currentRoom?.game?.turns_in_jail?.[inspectedPlayer.player_id] ?? 0
+    : 0;
+  const inspectedPlayerLinkedEventCount = inspectedPlayer
+    ? playerRecentEventCounts[inspectedPlayer.player_id] ?? 0
+    : 0;
+  const inspectedPlayerIsCurrentTurn = inspectedPlayer?.player_id === currentTurnPlayerId;
+  const inspectedPlayerCanBeTradeTarget =
+    inspectedPlayer != null &&
+    canProposeTrade &&
+    inspectedPlayer.player_id !== playerId &&
+    tradeTargets.some((player) => player.player_id === inspectedPlayer.player_id);
+  const inspectedPlayerIsSelectedTradeTarget =
+    inspectedPlayerCanBeTradeTarget && selectedTradeTargetId === inspectedPlayer.player_id;
+  let inspectedPlayerTradeMessage = null;
+  let inspectedPlayerDebtMessage = null;
+
+  if (pendingBankruptcy?.player_id === inspectedPlayer?.player_id) {
+    inspectedPlayerDebtMessage = `${inspectedPlayer.nickname} owes ${
+      pendingBankruptcyCreditorLabel
+    } $${pendingBankruptcy.amount_owed} and is handling their debts.`;
+  } else if (
+    pendingBankruptcy?.creditor_type === "player" &&
+    pendingBankruptcy.creditor_player_id === inspectedPlayer?.player_id
+  ) {
+    inspectedPlayerDebtMessage = `${inspectedPlayer.nickname} is waiting to collect $${
+      pendingBankruptcy.amount_owed
+    } from ${pendingBankruptcyPlayer?.nickname ?? "the debtor"}.`;
   }
 
   function getRecentEventsSelectedKind(cardKey) {
@@ -1317,6 +1432,72 @@ function App() {
 
   function getPlayerById(targetPlayerId) {
     return currentRoom?.players.find((player) => player.player_id === targetPlayerId) ?? null;
+  }
+
+  function getPlayerPosition(targetPlayerId) {
+    return playerPositions?.[targetPlayerId] ?? 0;
+  }
+
+  function getPlayerCell(targetPlayerId) {
+    return getCellByPosition(getPlayerPosition(targetPlayerId));
+  }
+
+  function getOwnedCellsByPlayer(targetPlayerId) {
+    if (!targetPlayerId) {
+      return [];
+    }
+
+    return boardCells.filter((cell) => propertyOwners[cell.index] === targetPlayerId);
+  }
+
+  function getMortgagedOwnedCellCount(targetPlayerId) {
+    if (!targetPlayerId) {
+      return 0;
+    }
+
+    return Object.entries(propertyMortgaged).filter(
+      ([position, isMortgaged]) =>
+        isMortgaged && propertyOwners[Number(position)] === targetPlayerId,
+    ).length;
+  }
+
+  function getPlayerColor(targetPlayerId, fallbackIndex = 0) {
+    const colorIndex = currentRoom?.players.findIndex(
+      (candidate) => candidate.player_id === targetPlayerId,
+    );
+    const paletteIndex = colorIndex >= 0 ? colorIndex : fallbackIndex;
+    return PLAYER_TOKEN_COLORS[paletteIndex % PLAYER_TOKEN_COLORS.length];
+  }
+
+  function renderPlayerToken(player, occupantIndex) {
+    const tokenColor = getPlayerColor(player.player_id, occupantIndex);
+    const movementEffect = movingTokenEffects[player.player_id] ?? null;
+    const movementOffset = movementEffect
+      ? getTokenMovementOffset(movementEffect.fromPosition, movementEffect.toPosition)
+      : null;
+
+    return (
+      <div
+        key={player.player_id}
+        className={`player-token ${
+          currentTurnPlayerId === player.player_id ? "is-active-turn" : ""
+        } ${movementEffect ? "is-moving" : ""}`}
+        style={{
+          "--player-token-color": tokenColor,
+          ...(movementOffset
+            ? {
+                "--token-move-from-x": `${movementOffset.x}px`,
+                "--token-move-from-y": `${movementOffset.y}px`,
+              }
+            : {}),
+          zIndex: Math.max(1, 8 - occupantIndex) + (movementEffect ? 20 : 0),
+        }}
+        title={player.nickname}
+        aria-label={`${player.nickname} token${movementEffect ? " just moved" : ""}`}
+      >
+        {getPlayerTokenLabel(player.nickname)}
+      </div>
+    );
   }
 
   function ownsFullColorSet(ownerId, colorGroup) {
@@ -1487,6 +1668,101 @@ function App() {
   const canPayJailFine = canUsePreRollDesk && isCurrentPlayerInJail;
   const canAffordJailFine = currentPlayerCash >= JAIL_FINE_AMOUNT;
   const canDeclareBankruptcy = canManageDebtRecovery;
+  const inspectedCellPosition = inspectedCell?.index ?? null;
+  const inspectedCellOwnedByYou = inspectedCellOwner?.player_id === playerId;
+  const inspectedCellIsPendingPurchase =
+    inspectedCellPosition != null && pendingPurchaseCell?.index === inspectedCellPosition;
+  const inspectedCellCanBuy = inspectedCellIsPendingPurchase && canResolvePurchase;
+  const inspectedCellCanSkipPurchase = inspectedCellIsPendingPurchase && canResolvePurchase;
+  const inspectedCellCanUpgrade =
+    inspectedCellPosition != null &&
+    canUpgradeProperties &&
+    upgradeableProperties.some((cell) => cell.index === inspectedCellPosition);
+  const inspectedCellCanSellUpgrade =
+    inspectedCellPosition != null &&
+    canSellUpgrades &&
+    sellableProperties.some((cell) => cell.index === inspectedCellPosition);
+  const inspectedCellCanMortgage =
+    inspectedCellPosition != null &&
+    canManageMortgages &&
+    mortgageableCells.some((cell) => cell.index === inspectedCellPosition);
+  const inspectedCellCanUnmortgage =
+    inspectedCellPosition != null &&
+    canUnmortgageProperties &&
+    unmortgageableCells.some((cell) => cell.index === inspectedCellPosition);
+  const inspectedCellCanUseTradeDesk =
+    inspectedCellPosition != null &&
+    canProposeTrade &&
+    tradeTargets.length > 0 &&
+    tradeableCells.some((cell) => cell.index === inspectedCellPosition);
+  const inspectedCellIsSelectedInTradeDesk =
+    inspectedCellCanUseTradeDesk && selectedTradePosition === String(inspectedCellPosition);
+  const inspectedCellHasQuickActions =
+    inspectedCellCanBuy ||
+    inspectedCellCanSkipPurchase ||
+    inspectedCellCanUpgrade ||
+    inspectedCellCanSellUpgrade ||
+    inspectedCellCanMortgage ||
+    inspectedCellCanUnmortgage ||
+    inspectedCellCanUseTradeDesk;
+  let inspectedCellQuickActionMessage = null;
+
+  if (inspectedCellIsPendingPurchase && !canResolvePurchase) {
+    inspectedCellQuickActionMessage = `${
+      pendingPurchasePlayer?.nickname ?? "The active player"
+    } is deciding whether to buy this.`;
+  } else if (inspectedCell?.price && !inspectedCellOwner) {
+    inspectedCellQuickActionMessage =
+      "This cell is unowned. Buy or pass will appear here when you land on it.";
+  } else if (inspectedCellOwnedByYou && inspectedCell.price && !inspectedCellHasQuickActions) {
+    if (pendingTrade) {
+      inspectedCellQuickActionMessage = "Quick actions are paused while a trade offer is waiting for a response.";
+    } else if (pendingAuction) {
+      inspectedCellQuickActionMessage = "Quick actions are paused while the auction is still in progress.";
+    } else if (pendingPurchase) {
+      inspectedCellQuickActionMessage = `Quick actions return after ${pendingPurchasePlayer?.nickname ?? "the active player"} decides on the purchase.`;
+    } else if (pendingBankruptcy && !canManageDebtRecovery) {
+      inspectedCellQuickActionMessage = "Quick actions are paused while another player handles their debts.";
+    } else if (currentTurnPlayerId !== playerId) {
+      inspectedCellQuickActionMessage =
+        "Quick actions for your cells open at the start of your own turn before rolling.";
+    } else if (!(currentRoom?.game?.turn.can_roll ?? false)) {
+      inspectedCellQuickActionMessage =
+        "Quick actions are only available at the start of your turn, before you roll.";
+    } else {
+      inspectedCellQuickActionMessage = "No quick action is available for this cell right now.";
+    }
+  } else if (inspectedCellIsSelectedInTradeDesk) {
+    inspectedCellQuickActionMessage = "This property is already selected in the trade form below.";
+  }
+
+  if (inspectedPlayerIsSelectedTradeTarget) {
+    inspectedPlayerTradeMessage = "This player is already selected in the trade form below.";
+  } else if (inspectedPlayer && inspectedPlayer.player_id === playerId) {
+    inspectedPlayerTradeMessage =
+      "This is your player summary. Pick another player here when you want to prepare a trade.";
+  } else if (inspectedPlayer && !inspectedPlayerCanBeTradeTarget) {
+    if (pendingTrade) {
+      inspectedPlayerTradeMessage = "Trade target selection is paused while a trade offer is waiting for a response.";
+    } else if (pendingAuction) {
+      inspectedPlayerTradeMessage = "Trade target selection is paused while the auction is still in progress.";
+    } else if (pendingPurchase) {
+      inspectedPlayerTradeMessage = `Trade target selection returns after ${
+        pendingPurchasePlayer?.nickname ?? "the active player"
+      } decides on the purchase.`;
+    } else if (pendingBankruptcy && !canManageDebtRecovery) {
+      inspectedPlayerTradeMessage =
+        "Trade target selection is paused while another player handles their debts.";
+    } else if (!canProposeTrade) {
+      inspectedPlayerTradeMessage =
+        "Trade target selection opens at the start of your turn, before you roll.";
+    } else if (tradeableCells.length === 0) {
+      inspectedPlayerTradeMessage =
+        "You need at least one unmortgaged cell without upgrades before you can prepare a trade.";
+    } else if (tradeTargets.length === 0) {
+      inspectedPlayerTradeMessage = "There is no other player available to trade with right now.";
+    }
+  }
 
   useEffect(() => {
     const nextTradeTargets =
@@ -1499,6 +1775,77 @@ function App() {
       setSelectedTradeTargetId(nextTradeTargets[0]?.player_id ?? "");
     }
   }, [selectedTradeTargetId, currentPlayer, currentRoom]);
+
+  useEffect(() => {
+    previousPositionsRef.current = {};
+    setMovingTokenEffects({});
+    Object.values(tokenMovementTimeoutsRef.current).forEach((timeoutId) => {
+      window.clearTimeout(timeoutId);
+    });
+    tokenMovementTimeoutsRef.current = {};
+  }, [currentRoomCode]);
+
+  useEffect(() => {
+    if (!currentRoomCode || !currentRoom) {
+      return;
+    }
+
+    const nextKnownPositions = {};
+    const nextMovementEffects = [];
+
+    for (const player of currentRoom.players) {
+      const nextPosition = playerPositions?.[player.player_id];
+
+      if (!Number.isInteger(nextPosition)) {
+        continue;
+      }
+
+      nextKnownPositions[player.player_id] = nextPosition;
+
+      const previousPosition = previousPositionsRef.current[player.player_id];
+      if (Number.isInteger(previousPosition) && previousPosition !== nextPosition) {
+        nextMovementEffects.push({
+          playerId: player.player_id,
+          fromPosition: previousPosition,
+          toPosition: nextPosition,
+        });
+      }
+    }
+
+    previousPositionsRef.current = nextKnownPositions;
+
+    if (nextMovementEffects.length === 0) {
+      return;
+    }
+
+    setMovingTokenEffects((current) => {
+      const next = { ...current };
+      for (const movementEffect of nextMovementEffects) {
+        next[movementEffect.playerId] = movementEffect;
+      }
+      return next;
+    });
+
+    for (const movementEffect of nextMovementEffects) {
+      if (tokenMovementTimeoutsRef.current[movementEffect.playerId]) {
+        window.clearTimeout(tokenMovementTimeoutsRef.current[movementEffect.playerId]);
+      }
+
+      tokenMovementTimeoutsRef.current[movementEffect.playerId] = window.setTimeout(() => {
+        setMovingTokenEffects((current) => {
+          if (!current[movementEffect.playerId]) {
+            return current;
+          }
+
+          const next = { ...current };
+          delete next[movementEffect.playerId];
+          return next;
+        });
+
+        delete tokenMovementTimeoutsRef.current[movementEffect.playerId];
+      }, TOKEN_MOVE_FEEDBACK_MS);
+    }
+  }, [currentRoomCode, currentRoom, playerPositions]);
 
   useEffect(() => {
     const nextBoardCells = currentRoom?.game?.board ?? [];
@@ -1748,6 +2095,10 @@ function App() {
   useEffect(() => {
     return () => {
       clearRecentEventHighlightTimeouts();
+      Object.values(tokenMovementTimeoutsRef.current).forEach((timeoutId) => {
+        window.clearTimeout(timeoutId);
+      });
+      tokenMovementTimeoutsRef.current = {};
     };
   }, []);
 
@@ -2065,7 +2416,7 @@ function App() {
 
   async function handleDeclareBankruptcy() {
     if (!currentRoom || !playerToken || !canDeclareBankruptcy) {
-      setStatus("You can only declare bankruptcy during your own debt recovery.");
+      setStatus("You can only declare bankruptcy when you're the one in debt.");
       return;
     }
 
@@ -2669,7 +3020,7 @@ function App() {
 
   async function handleRespondTrade(accept) {
     if (!currentRoom || !playerToken || !pendingTradeCell) {
-      setStatus("There is no pending trade to resolve.");
+      setStatus("No active trade offer to respond to.");
       return;
     }
 
@@ -3061,6 +3412,330 @@ function App() {
                     )}
                   </section>
 
+                  {inspectedCell && (
+                    <section
+                      className="game-summary cell-inspector board-center-section"
+                      style={
+                        inspectedCellOwner
+                          ? { "--cell-owner-color": getPlayerColor(inspectedCellOwner.player_id) }
+                          : undefined
+                      }
+                    >
+                      <div className="cell-inspector-header">
+                        <div>
+                          <h3>Selected cell</h3>
+                          <p className="cell-inspector-title">
+                            <strong>{inspectedCell.name}</strong> &middot; Cell {inspectedCell.index}
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          className="recent-events-clear-focus"
+                          onClick={clearRecentEventFocus}
+                        >
+                          Clear
+                        </button>
+                      </div>
+                      <p className="cell-inspector-description">
+                        <strong>{formatCellType(inspectedCell.cell_type)}</strong> &middot;{" "}
+                        {inspectedCell.description}
+                      </p>
+                      <div className="cell-inspector-meta">
+                        {inspectedCell.price && (
+                          <article className="cell-inspector-stat">
+                            <span>Price</span>
+                            <strong>${inspectedCell.price}</strong>
+                          </article>
+                        )}
+                        {inspectedCellRentHint && (
+                          <article className="cell-inspector-stat">
+                            <span>Rent</span>
+                            <strong>{inspectedCellRentHint.replace("Rent: ", "")}</strong>
+                          </article>
+                        )}
+                        {inspectedCell.price && (
+                          <article className="cell-inspector-stat">
+                            <span>Owner</span>
+                            <strong>{inspectedCellOwner?.nickname ?? "Unowned"}</strong>
+                          </article>
+                        )}
+                        {inspectedCell.price && (
+                          <article className="cell-inspector-stat">
+                            <span>Mortgage</span>
+                            <strong>
+                              {inspectedCellMortgaged
+                                ? "Active"
+                                : `$${getMortgageValue(inspectedCell) ?? 0}`}
+                            </strong>
+                          </article>
+                        )}
+                        {inspectedCell.cell_type === "property" && (
+                          <article className="cell-inspector-stat">
+                            <span>Level</span>
+                            <strong>
+                              {inspectedCellLevel}/{MAX_PROPERTY_LEVEL}
+                            </strong>
+                          </article>
+                        )}
+                        {inspectedCell.cell_type === "property" && (
+                          <article className="cell-inspector-stat">
+                            <span>Upgrade</span>
+                            <strong>${getUpgradeCost(inspectedCell) ?? 0}</strong>
+                          </article>
+                        )}
+                        {!inspectedCell.price && typeof inspectedCell.amount === "number" && (
+                          <article className="cell-inspector-stat">
+                            <span>Amount</span>
+                            <strong>
+                              {inspectedCell.cell_type === "tax"
+                                ? `-$${inspectedCell.amount}`
+                                : `+$${inspectedCell.amount}`}
+                            </strong>
+                          </article>
+                        )}
+                        <article className="cell-inspector-stat">
+                          <span>Occupants</span>
+                          <strong>{inspectedCellOccupants.length}</strong>
+                        </article>
+                        {inspectedCellLinkedEventCount > 0 && (
+                          <article className="cell-inspector-stat">
+                            <span>Recent events</span>
+                            <strong>{inspectedCellLinkedEventCount}</strong>
+                          </article>
+                        )}
+                      </div>
+                      {inspectedCellHasQuickActions && (
+                        <div className="cell-inspector-actions">
+                          {inspectedCellCanBuy && (
+                            <button
+                              type="button"
+                              className="buy-button"
+                              onClick={handleBuyProperty}
+                              disabled={isSubmitting}
+                            >
+                              Buy property
+                            </button>
+                          )}
+                          {inspectedCellCanSkipPurchase && (
+                            <button
+                              type="button"
+                              className="pass-button"
+                              onClick={handleSkipPurchase}
+                              disabled={isSubmitting}
+                            >
+                              Pass on purchase
+                            </button>
+                          )}
+                          {inspectedCellCanUpgrade && (
+                            <button
+                              type="button"
+                              className="upgrade-button"
+                              onClick={() => handleUpgradeProperty(inspectedCell.index)}
+                              disabled={isSubmitting}
+                            >
+                              Upgrade
+                            </button>
+                          )}
+                          {inspectedCellCanSellUpgrade && (
+                            <button
+                              type="button"
+                              className="sell-button"
+                              onClick={() => handleSellUpgradeProperty(inspectedCell.index)}
+                              disabled={isSubmitting}
+                            >
+                              Sell upgrade
+                            </button>
+                          )}
+                          {inspectedCellCanMortgage && (
+                            <button
+                              type="button"
+                              className="mortgage-button"
+                              onClick={() => handleMortgageProperty(inspectedCell.index)}
+                              disabled={isSubmitting}
+                            >
+                              Mortgage
+                            </button>
+                          )}
+                          {inspectedCellCanUnmortgage && (
+                            <button
+                              type="button"
+                              className="unmortgage-button"
+                              onClick={() => handleUnmortgageProperty(inspectedCell.index)}
+                              disabled={isSubmitting}
+                            >
+                              Unmortgage
+                            </button>
+                          )}
+                          {inspectedCellCanUseTradeDesk && (
+                            <button
+                              type="button"
+                              className="trade-button accept-button"
+                              onClick={() => {
+                                setSelectedTradePosition(String(inspectedCell.index));
+                                setStatus(
+                                  inspectedCellIsSelectedInTradeDesk
+                                    ? `${inspectedCell.name} is already selected in the trade desk.`
+                                    : `Prepared ${inspectedCell.name} in the trade desk below.`,
+                                );
+                              }}
+                              disabled={isSubmitting}
+                            >
+                              {inspectedCellIsSelectedInTradeDesk
+                                ? "Selected for trade"
+                                : "Select for trade"}
+                            </button>
+                          )}
+                        </div>
+                      )}
+                      {inspectedCellQuickActionMessage && (
+                        <p className="cell-inspector-helper">{inspectedCellQuickActionMessage}</p>
+                      )}
+                      {inspectedCellOccupants.length > 0 && (
+                        <p className="cell-inspector-note">
+                          Occupants:{" "}
+                          <strong>{inspectedCellOccupants.map((player) => player.nickname).join(", ")}</strong>
+                        </p>
+                      )}
+                      {inspectedCellJailGroups &&
+                        (inspectedCellJailGroups.jailPlayers.length > 0 ||
+                          inspectedCellJailGroups.visitingPlayers.length > 0) && (
+                          <p className="cell-inspector-note">
+                            Jail split:{" "}
+                            <strong>
+                              {inspectedCellJailGroups.jailPlayers.length} jailed
+                            </strong>{" "}
+                            &middot;{" "}
+                            <strong>{inspectedCellJailGroups.visitingPlayers.length} visiting</strong>
+                          </p>
+                        )}
+                      {inspectedCellMortgaged && (
+                        <p className="cell-inspector-note">
+                          Mortgage is active, so this cell is not charging rent right now.
+                        </p>
+                      )}
+                    </section>
+                  )}
+
+                  {inspectedPlayer && (
+                    <section
+                      className="game-summary player-inspector board-center-section"
+                      style={
+                        inspectedPlayerColor
+                          ? { "--player-inspector-color": inspectedPlayerColor }
+                          : undefined
+                      }
+                    >
+                      <div className="cell-inspector-header">
+                        <div>
+                          <h3>Selected player</h3>
+                          <p className="cell-inspector-title">
+                            <strong>
+                              {inspectedPlayer.nickname}
+                              {inspectedPlayer.player_id === playerId ? " (you)" : ""}
+                            </strong>
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          className="recent-events-clear-focus"
+                          onClick={clearRecentEventFocus}
+                        >
+                          Clear
+                        </button>
+                      </div>
+                      <p className="cell-inspector-description">
+                        {inspectedPlayerIsCurrentTurn
+                          ? "This player is taking the current turn."
+                          : "This player is waiting for their next turn."}
+                      </p>
+                      <div className="cell-inspector-meta">
+                        <article className="cell-inspector-stat">
+                          <span>Cash</span>
+                          <strong>${inspectedPlayerCash}</strong>
+                        </article>
+                        <article className="cell-inspector-stat">
+                          <span>Position</span>
+                          <strong>
+                            Cell {inspectedPlayerPosition}
+                            {inspectedPlayerCell ? ` - ${inspectedPlayerCell.name}` : ""}
+                          </strong>
+                        </article>
+                        <article className="cell-inspector-stat">
+                          <span>Status</span>
+                          <strong>
+                            {pendingBankruptcy?.player_id === inspectedPlayer.player_id
+                              ? "In debt"
+                              : inspectedPlayerInJail
+                                ? "In jail"
+                                : inspectedPlayerIsCurrentTurn
+                                  ? "Current turn"
+                                  : "Waiting"}
+                          </strong>
+                        </article>
+                        <article className="cell-inspector-stat">
+                          <span>Owned cells</span>
+                          <strong>{inspectedPlayerOwnedCells.length}</strong>
+                        </article>
+                        <article className="cell-inspector-stat">
+                          <span>Mortgaged cells</span>
+                          <strong>{inspectedPlayerMortgagedCellCount}</strong>
+                        </article>
+                        {inspectedPlayerLinkedEventCount > 0 && (
+                          <article className="cell-inspector-stat">
+                            <span>Recent events</span>
+                            <strong>{inspectedPlayerLinkedEventCount}</strong>
+                          </article>
+                        )}
+                      </div>
+                      {inspectedPlayerCanBeTradeTarget && (
+                        <div className="cell-inspector-actions">
+                          <button
+                            type="button"
+                            className="trade-button accept-button"
+                            onClick={() => {
+                              setSelectedTradeTargetId(inspectedPlayer.player_id);
+                              setStatus(
+                                inspectedPlayerIsSelectedTradeTarget
+                                  ? `${inspectedPlayer.nickname} is already selected in the trade form.`
+                                  : `Prepared ${inspectedPlayer.nickname} in the trade form below.`,
+                              );
+                            }}
+                            disabled={isSubmitting}
+                          >
+                            {inspectedPlayerIsSelectedTradeTarget
+                              ? "Selected for trade"
+                              : "Select for trade"}
+                          </button>
+                        </div>
+                      )}
+                      {inspectedPlayerTradeMessage && (
+                        <p className="cell-inspector-helper">{inspectedPlayerTradeMessage}</p>
+                      )}
+                      {inspectedPlayerInJail && (
+                        <p className="cell-inspector-note">
+                          In jail — turn <strong>{inspectedPlayerTurnsInJail}/3</strong>.{" "}
+                          {inspectedPlayerTurnsInJail >= 2
+                            ? "Next failed roll forces the fine and movement."
+                            : "They can roll doubles to leave or pay before rolling."}
+                        </p>
+                      )}
+                      {inspectedPlayerDebtMessage && (
+                        <p className="cell-inspector-note">{inspectedPlayerDebtMessage}</p>
+                      )}
+                      {inspectedPlayerOwnedCellsPreview.length > 0 && (
+                        <p className="cell-inspector-note">
+                          Properties:{" "}
+                          <strong>
+                            {inspectedPlayerOwnedCellsPreview.map((cell) => cell.name).join(", ")}
+                            {inspectedPlayerOwnedCells.length > inspectedPlayerOwnedCellsPreview.length
+                              ? ` +${inspectedPlayerOwnedCells.length - inspectedPlayerOwnedCellsPreview.length} more`
+                              : ""}
+                          </strong>
+                        </p>
+                      )}
+                    </section>
+                  )}
+
                   {lastBankruptcySummary && (
                     <BankruptcySummaryCard
                       summary={lastBankruptcySummary}
@@ -3068,36 +3743,139 @@ function App() {
                     />
                   )}
 
-                  <RecentEventsCard
-                    events={priorRecentEvents}
-                    title="Recent events"
-                    maxGroups={4}
-                    selectedKind={getRecentEventsSelectedKind("game")}
-                    expandedGroups={getRecentEventsExpandedState("game")}
-                    freshEventIds={freshRecentEventIds}
-                    focusedEventId={focusedRecentEventId}
-                    entityFilter={recentEventsEntityFilter}
-                    onSelectKind={(kind) => handleRecentEventsKindChange("game", kind)}
-                    onToggleGroup={(groupKey) => handleRecentEventsGroupToggle("game", groupKey)}
-                    onFocusEvent={handleRecentEventFocus}
-                    onClearFocus={clearRecentEventFocus}
-                    showNavigationHelp
-                    isNavigationHelpCollapsed={isRecentEventsHelpCollapsed}
-                    onToggleNavigationHelp={handleRecentEventsHelpToggle}
-                    onResetNavigationHelp={hasStoredHelpPreference ? handleRecentEventsHelpReset : undefined}
-                    announceUpdates
-                    clearFocusAnnouncementId={recentEventsClearFocusAnnouncementId}
-                  />
-
-                  {lastDrawnCard && (
-                    <section className="drawn-card board-center-section">
-                      <h3>{lastDrawnCard.deck} card</h3>
-                      <p>
-                        <strong>{lastDrawnCard.title}</strong>
+                  <div className="room-actions board-center-actions">
+                    {pendingPurchaseCell && !canResolvePurchase && (
+                      <p className="purchase-note">
+                        Waiting for {pendingPurchasePlayer?.nickname ?? "the active player"} to buy or
+                        pass on {pendingPurchaseCell.name}.
                       </p>
-                      <p>{lastDrawnCard.description}</p>
-                    </section>
-                  )}
+                    )}
+                    {canResolvePurchase && (
+                      <p className="purchase-note">
+                        You can buy {pendingPurchaseCell.name} for ${pendingPurchase?.price} or pass.
+                      </p>
+                    )}
+                    {pendingAuction && !canBidInAuction && (
+                      <p className="purchase-note">
+                        Waiting for {pendingAuctionActivePlayer?.nickname ?? "the current bidder"} to
+                        bid or pass on{" "}
+                        {pendingAuctionCell?.name ?? pendingAuction.cell_name}.
+                      </p>
+                    )}
+                    {pendingAuction && canBidInAuction && (
+                      <p className="purchase-note">
+                        You can bid at least ${minimumAuctionBid} for{" "}
+                        {pendingAuctionCell?.name ?? pendingAuction.cell_name}, or pass.
+                      </p>
+                    )}
+                    {pendingTrade && !canAcceptTrade && !canRejectTrade && (
+                      <p className="purchase-note">
+                        Waiting for {pendingTradeReceiver?.nickname ?? "the receiving player"} to
+                        respond to the trade offer for {pendingTradeCell?.name ?? pendingTrade.cell_name}.
+                      </p>
+                    )}
+                    {canAcceptTrade && (
+                      <p className="purchase-note">
+                        You can accept or reject the trade for{" "}
+                        {pendingTradeCell?.name ?? pendingTrade.cell_name}.
+                      </p>
+                    )}
+                    {pendingTrade?.proposer_id === playerId && (
+                      <p className="purchase-note">
+                        Your turn is paused until the trade is accepted, rejected, or cancelled.
+                      </p>
+                    )}
+                    {pendingBankruptcy && !canManageDebtRecovery && (
+                      <p className="purchase-note">
+                        Waiting for {pendingBankruptcyPlayer?.nickname ?? "the active player"} to raise $
+                        {pendingBankruptcy.amount_owed} owed to {pendingBankruptcyCreditorLabel} or
+                        declare bankruptcy.
+                      </p>
+                    )}
+                    {canManageDebtRecovery && (
+                      <p className="purchase-note">
+                        You owe {pendingBankruptcyCreditorLabel} ${pendingBankruptcy?.amount_owed ?? 0}.
+                        Sell upgrades, mortgage cells, or trade property for cash to cover the debt, or
+                        declare bankruptcy. If you go bankrupt, any remaining upgrades are sold back to
+                        the bank automatically before your properties go to the creditor, and any already mortgaged
+                        properties stay mortgaged when they transfer.
+                      </p>
+                    )}
+                    {isCurrentPlayerInJail && (
+                      <p className="jail-notice">
+                        You are in jail. Turn {currentPlayerTurnsInJail}/3.{" "}
+                        {currentPlayerTurnsInJail >= 2
+                          ? `Next failed roll forces a $${JAIL_FINE_AMOUNT} fine and you move.`
+                          : `Roll doubles to escape for free, or pay $${JAIL_FINE_AMOUNT} before rolling.`}
+                      </p>
+                    )}
+                    {canPayJailFine && (
+                      <button
+                        type="button"
+                        className="buy-button"
+                        onClick={handlePayJailFine}
+                        disabled={isSubmitting || !canAffordJailFine}
+                      >
+                        Pay ${JAIL_FINE_AMOUNT} fine
+                      </button>
+                    )}
+                    {canPayJailFine && !canAffordJailFine && (
+                      <p className="purchase-note">
+                        You need at least ${JAIL_FINE_AMOUNT} cash to pay your way out before rolling.
+                      </p>
+                    )}
+                    {canDeclareBankruptcy && (
+                      <button
+                        type="button"
+                        className="pass-button"
+                        onClick={handleDeclareBankruptcy}
+                        disabled={isSubmitting}
+                      >
+                        Declare bankruptcy
+                      </button>
+                    )}
+                    {!isCurrentPlayerInJail && currentPlayerDoublesStreak > 0 && (
+                      <p className="doubles-notice">
+                        Doubles streak: {currentPlayerDoublesStreak}/3 - one more and you go to jail!
+                      </p>
+                    )}
+                    <button
+                      type="button"
+                      className="start-button"
+                      onClick={handleRollDice}
+                      disabled={isSubmitting || !canRollDice}
+                    >
+                      {isCurrentPlayerInJail ? "Roll dice (jail)" : "Roll dice"}
+                    </button>
+                    {canResolvePurchase && (
+                      <>
+                        <button
+                          type="button"
+                          className="buy-button"
+                          onClick={handleBuyProperty}
+                          disabled={isSubmitting}
+                        >
+                          Buy property
+                        </button>
+                        <button
+                          type="button"
+                          className="pass-button"
+                          onClick={handleSkipPurchase}
+                          disabled={isSubmitting}
+                        >
+                          Pass on purchase
+                        </button>
+                      </>
+                    )}
+                    <button
+                      type="button"
+                      className="leave-button"
+                      onClick={handleLeaveRoom}
+                      disabled={isSubmitting}
+                    >
+                      Leave room
+                    </button>
+                  </div>
 
                   {pendingPurchaseCell && (
                     <section className="purchase-card board-center-section">
@@ -3242,7 +4020,7 @@ function App() {
                           {!canAcceptTrade && !canRejectTrade && (
                             <p className="trade-note">
                               Waiting for {pendingTradeReceiver?.nickname ?? "the receiving player"} to
-                              resolve the offer.
+                              accept or reject the offer.
                             </p>
                           )}
                         </>
@@ -3252,7 +4030,7 @@ function App() {
                             {canManageDebtRecovery
                               ? "Offer one of your unmortgaged cells for cash to escape bankruptcy."
                               : "Offer one of your unmortgaged cells for cash before rolling."}{" "}
-                            This MVP trade flow is property-for-cash only.
+                            Property-for-cash only in this version.
                           </p>
                           <div className="trade-form">
                             <label className="trade-field">
@@ -3340,7 +4118,7 @@ function App() {
                                   <div>
                                     <h5>{cell.name}</h5>
                                     <p>
-                                      Value: <strong>${mortgageValue}</strong>
+                                      You receive: <strong>${mortgageValue}</strong>
                                     </p>
                                   </div>
                                   <button
@@ -3401,8 +4179,8 @@ function App() {
                       <h3>Property management</h3>
                       <p>
                         {canManageDebtRecovery
-                          ? "Sell upgrades to raise cash and escape bankruptcy. Building is locked until the debt is resolved."
-                          : "Build or sell upgrades before rolling. This is our simplified houses system for the MVP."}
+                          ? "Sell upgrades to raise cash and escape bankruptcy. Building is locked until your debts are cleared."
+                          : "Build or sell upgrades before rolling. This is a simplified upgrade system."}
                       </p>
                       {!canManageDebtRecovery && upgradeableProperties.length > 0 && (
                         <div className="upgrade-group">
@@ -3424,10 +4202,10 @@ function App() {
                                       <strong>{formatCellType(cell.color_group ?? "property")}</strong>
                                     </p>
                                     <p>
-                                      Level <strong>{level}</strong> {"->"} <strong>{nextLevel}</strong>
+                                      Level <strong>{level}</strong> {"→"} <strong>{nextLevel}</strong>
                                     </p>
                                     <p>
-                                      {currentRent} {"->"} <strong>{nextRent}</strong>
+                                      Rent: {currentRent?.replace("Rent: ", "")} {"→"} <strong>{nextRent?.replace("Rent: ", "")}</strong>
                                     </p>
                                     <p>
                                       Cost: <strong>${upgradeCost}</strong>
@@ -3463,10 +4241,10 @@ function App() {
                                   <div>
                                     <h4>{cell.name}</h4>
                                     <p>
-                                      Level <strong>{level}</strong> {"->"} <strong>{nextLevel}</strong>
+                                      Level <strong>{level}</strong> {"→"} <strong>{nextLevel}</strong>
                                     </p>
                                     <p>
-                                      {currentRent} {"->"} <strong>{nextRent}</strong>
+                                      Rent: {currentRent?.replace("Rent: ", "")} {"→"} <strong>{nextRent?.replace("Rent: ", "")}</strong>
                                     </p>
                                     <p>
                                       Cash back: <strong>${sellValue}</strong>
@@ -3494,144 +4272,41 @@ function App() {
                     </section>
                   )}
 
-                  <div className="room-actions board-center-actions">
-                    {pendingPurchaseCell && !canResolvePurchase && (
-                      <p className="purchase-note">
-                        Waiting for {pendingPurchasePlayer?.nickname ?? "the active player"} to buy or
-                        pass on {pendingPurchaseCell.name}.
+                  <RecentEventsCard
+                    events={priorRecentEvents}
+                    title="Recent events"
+                    maxGroups={4}
+                    selectedKind={getRecentEventsSelectedKind("game")}
+                    expandedGroups={getRecentEventsExpandedState("game")}
+                    freshEventIds={freshRecentEventIds}
+                    focusedEventId={focusedRecentEventId}
+                    entityFilter={recentEventsEntityFilter}
+                    onSelectKind={(kind) => handleRecentEventsKindChange("game", kind)}
+                    onToggleGroup={(groupKey) => handleRecentEventsGroupToggle("game", groupKey)}
+                    onFocusEvent={handleRecentEventFocus}
+                    onClearFocus={clearRecentEventFocus}
+                    showNavigationHelp
+                    isNavigationHelpCollapsed={isRecentEventsHelpCollapsed}
+                    onToggleNavigationHelp={handleRecentEventsHelpToggle}
+                    onResetNavigationHelp={hasStoredHelpPreference ? handleRecentEventsHelpReset : undefined}
+                    announceUpdates
+                    clearFocusAnnouncementId={recentEventsClearFocusAnnouncementId}
+                  />
+
+                  {lastDrawnCard && (
+                    <section className="drawn-card board-center-section">
+                      <h3>{lastDrawnCard.deck} card</h3>
+                      <p>
+                        <strong>{lastDrawnCard.title}</strong>
                       </p>
-                    )}
-                    {canResolvePurchase && (
-                      <p className="purchase-note">
-                        You can buy {pendingPurchaseCell.name} for ${pendingPurchase?.price} or pass.
-                      </p>
-                    )}
-                    {pendingAuction && !canBidInAuction && (
-                      <p className="purchase-note">
-                        Waiting for {pendingAuctionActivePlayer?.nickname ?? "the active bidder"} to
-                        resolve the auction for{" "}
-                        {pendingAuctionCell?.name ?? pendingAuction.cell_name}.
-                      </p>
-                    )}
-                    {pendingAuction && canBidInAuction && (
-                      <p className="purchase-note">
-                        You can bid at least ${minimumAuctionBid} for{" "}
-                        {pendingAuctionCell?.name ?? pendingAuction.cell_name}, or pass.
-                      </p>
-                    )}
-                    {pendingTrade && !canAcceptTrade && !canRejectTrade && (
-                      <p className="purchase-note">
-                        Waiting for {pendingTradeReceiver?.nickname ?? "the receiving player"} to
-                        resolve the trade for {pendingTradeCell?.name ?? pendingTrade.cell_name}.
-                      </p>
-                    )}
-                    {canAcceptTrade && (
-                      <p className="purchase-note">
-                        You can accept or reject the trade for{" "}
-                        {pendingTradeCell?.name ?? pendingTrade.cell_name}.
-                      </p>
-                    )}
-                    {pendingTrade?.proposer_id === playerId && (
-                      <p className="purchase-note">
-                        Your turn is paused until the trade is accepted, rejected, or cancelled.
-                      </p>
-                    )}
-                    {pendingBankruptcy && !canManageDebtRecovery && (
-                      <p className="purchase-note">
-                        Waiting for {pendingBankruptcyPlayer?.nickname ?? "the active player"} to recover $
-                        {pendingBankruptcy.amount_owed} owed to {pendingBankruptcyCreditorLabel} or
-                        declare bankruptcy.
-                      </p>
-                    )}
-                    {canManageDebtRecovery && (
-                      <p className="purchase-note">
-                        You owe {pendingBankruptcyCreditorLabel} ${pendingBankruptcy?.amount_owed ?? 0}.
-                        Sell upgrades, mortgage cells, or trade property for cash to cover the debt, or
-                        declare bankruptcy. If you go bankrupt, any remaining upgrades are sold back to
-                        the bank automatically before assets transfer, and any already mortgaged
-                        properties stay mortgaged for the new owner.
-                      </p>
-                    )}
-                    {isCurrentPlayerInJail && (
-                      <p className="jail-notice">
-                        You are in jail. Turn {currentPlayerTurnsInJail}/3.{" "}
-                        {currentPlayerTurnsInJail >= 2
-                          ? `Next failed roll forces a $${JAIL_FINE_AMOUNT} fine and you move.`
-                          : `Roll doubles to escape for free, or pay $${JAIL_FINE_AMOUNT} before rolling.`}
-                      </p>
-                    )}
-                    {canPayJailFine && (
-                      <button
-                        type="button"
-                        className="buy-button"
-                        onClick={handlePayJailFine}
-                        disabled={isSubmitting || !canAffordJailFine}
-                      >
-                        Pay ${JAIL_FINE_AMOUNT} fine
-                      </button>
-                    )}
-                    {canPayJailFine && !canAffordJailFine && (
-                      <p className="purchase-note">
-                        You need at least ${JAIL_FINE_AMOUNT} cash to pay your way out before rolling.
-                      </p>
-                    )}
-                    {canDeclareBankruptcy && (
-                      <button
-                        type="button"
-                        className="pass-button"
-                        onClick={handleDeclareBankruptcy}
-                        disabled={isSubmitting}
-                      >
-                        Declare bankruptcy
-                      </button>
-                    )}
-                    {!isCurrentPlayerInJail && currentPlayerDoublesStreak > 0 && (
-                      <p className="doubles-notice">
-                        Doubles streak: {currentPlayerDoublesStreak}/3 - one more and you go to jail!
-                      </p>
-                    )}
-                    <button
-                      type="button"
-                      className="start-button"
-                      onClick={handleRollDice}
-                      disabled={isSubmitting || !canRollDice}
-                    >
-                      {isCurrentPlayerInJail ? "Roll dice (jail)" : "Roll dice"}
-                    </button>
-                    {canResolvePurchase && (
-                      <>
-                        <button
-                          type="button"
-                          className="buy-button"
-                          onClick={handleBuyProperty}
-                          disabled={isSubmitting}
-                        >
-                          Buy property
-                        </button>
-                        <button
-                          type="button"
-                          className="pass-button"
-                          onClick={handleSkipPurchase}
-                          disabled={isSubmitting}
-                        >
-                          Pass on purchase
-                        </button>
-                      </>
-                    )}
-                    <button
-                      type="button"
-                      className="leave-button"
-                      onClick={handleLeaveRoom}
-                      disabled={isSubmitting}
-                    >
-                      Leave room
-                    </button>
-                  </div>
+                      <p>{lastDrawnCard.description}</p>
+                    </section>
+                  )}
                 </section>
 
                 {boardCells.map((cell) => {
                   const occupants = currentRoom.players.filter((player) => {
-                    const playerPosition = currentRoom.game?.positions?.[player.player_id];
+                    const playerPosition = playerPositions?.[player.player_id];
                     return Number.isInteger(playerPosition) && playerPosition === cell.index;
                   });
                   const { jailPlayers, visitingPlayers } =
@@ -3643,6 +4318,9 @@ function App() {
                   const groupClass = cell.color_group ? `cell-group-${cell.color_group}` : "";
                   const linkedEventCount = cellRecentEventCounts[cell.index] ?? 0;
                   const linkedEventLabel = formatLinkedEventLabel(linkedEventCount, cell.name);
+                  const ownerPlayerId = propertyOwners[cell.index] ?? null;
+                  const ownerPlayer = ownerPlayerId ? getPlayerById(ownerPlayerId) : null;
+                  const ownerColor = ownerPlayer ? getPlayerColor(ownerPlayer.player_id) : null;
 
                   return (
                     <article
@@ -3656,7 +4334,11 @@ function App() {
                       }}
                       className={`cell-tile cell-side-${boardSide} ${groupClass} ${
                         lastLandedCell?.index === cell.index ? "is-landed" : ""
-                      } ${focusedEventCellIndex === cell.index ? "is-focused" : ""} is-actionable`}
+                      } ${focusedEventCellIndex === cell.index ? "is-focused" : ""} ${
+                        movedCellIndexSet.has(cell.index) ? "is-move-target" : ""
+                      } ${ownerPlayer ? "is-owned" : ""} ${
+                        ownerPlayer?.player_id === playerId ? "is-owned-by-you" : ""
+                      } is-actionable`}
                       role="button"
                       tabIndex={0}
                       onClick={() => handleBoardCellFocus(cell)}
@@ -3666,7 +4348,11 @@ function App() {
                           handleBoardCellFocus(cell);
                         }
                       }}
-                      style={{ gridRow: row, gridColumn: column }}
+                      style={{
+                        gridRow: row,
+                        gridColumn: column,
+                        ...(ownerColor ? { "--cell-owner-color": ownerColor } : {}),
+                      }}
                     >
                       <span className={`cell-band cell-band-${cell.cell_type}`} aria-hidden="true" />
                       {linkedEventCount > 0 && (
@@ -3679,6 +4365,18 @@ function App() {
                         </span>
                       )}
                       <h4>{cell.name}</h4>
+                      {ownerPlayer && (
+                        <p
+                          className="cell-owner-badge"
+                          title={`Owned by ${ownerPlayer.nickname}`}
+                          aria-label={`Owned by ${ownerPlayer.nickname}`}
+                        >
+                          <span className="cell-owner-dot" aria-hidden="true" />
+                          <span className="cell-owner-label">
+                            {getPlayerTokenLabel(ownerPlayer.nickname)}
+                          </span>
+                        </p>
+                      )}
                       {propertyMortgaged[cell.index] && (
                         <p className="cell-mortgaged-badge">Mortgaged</p>
                       )}
@@ -3691,88 +4389,25 @@ function App() {
                         <div className="cell-jail-layout">
                           {visitingPlayers.length > 0 && (
                             <div className="cell-occupants cell-visiting-zone">
-                          {visitingPlayers.map((player, occupantIndex) => {
-                            const colorIndex = currentRoom.players.findIndex(
-                              (candidate) => candidate.player_id === player.player_id,
-                            );
-                            const tokenColor =
-                              PLAYER_TOKEN_COLORS[colorIndex % PLAYER_TOKEN_COLORS.length];
-
-                            return (
-                              <div
-                                key={player.player_id}
-                                    className={`player-token ${
-                                      currentTurnPlayerId === player.player_id ? "is-active-turn" : ""
-                                    }`}
-                                style={{
-                                  "--player-token-color": tokenColor,
-                                  zIndex: Math.max(1, 8 - occupantIndex),
-                                }}
-                                title={player.nickname}
-                                aria-label={`${player.nickname} token`}
-                                  >
-                                    {getPlayerTokenLabel(player.nickname)}
-                                  </div>
-                                );
-                              })}
+                              {visitingPlayers.map((player, occupantIndex) =>
+                                renderPlayerToken(player, occupantIndex),
+                              )}
                             </div>
                           )}
                           {jailPlayers.length > 0 && (
                             <div className="cell-occupants cell-jail-zone">
-                          {jailPlayers.map((player, occupantIndex) => {
-                            const colorIndex = currentRoom.players.findIndex(
-                              (candidate) => candidate.player_id === player.player_id,
-                            );
-                            const tokenColor =
-                              PLAYER_TOKEN_COLORS[colorIndex % PLAYER_TOKEN_COLORS.length];
-
-                            return (
-                              <div
-                                key={player.player_id}
-                                    className={`player-token ${
-                                      currentTurnPlayerId === player.player_id ? "is-active-turn" : ""
-                                    }`}
-                                style={{
-                                  "--player-token-color": tokenColor,
-                                  zIndex: Math.max(1, 8 - occupantIndex),
-                                }}
-                                title={player.nickname}
-                                aria-label={`${player.nickname} token`}
-                                  >
-                                    {getPlayerTokenLabel(player.nickname)}
-                                  </div>
-                                );
-                              })}
+                              {jailPlayers.map((player, occupantIndex) =>
+                                renderPlayerToken(player, occupantIndex),
+                              )}
                             </div>
                           )}
                         </div>
                       ) : (
                         occupants.length > 0 && (
                           <div className="cell-occupants">
-                            {occupants.map((player, occupantIndex) => {
-                              const colorIndex = currentRoom.players.findIndex(
-                                (candidate) => candidate.player_id === player.player_id,
-                              );
-                              const tokenColor =
-                                PLAYER_TOKEN_COLORS[colorIndex % PLAYER_TOKEN_COLORS.length];
-
-                              return (
-                                <div
-                                  key={player.player_id}
-                                  className={`player-token ${
-                                    currentTurnPlayerId === player.player_id ? "is-active-turn" : ""
-                                  }`}
-                                  style={{
-                                    "--player-token-color": tokenColor,
-                                    zIndex: Math.max(1, 8 - occupantIndex),
-                                  }}
-                                  title={player.nickname}
-                                  aria-label={`${player.nickname} token`}
-                                >
-                                  {getPlayerTokenLabel(player.nickname)}
-                                </div>
-                              );
-                            })}
+                            {occupants.map((player, occupantIndex) =>
+                              renderPlayerToken(player, occupantIndex),
+                            )}
                           </div>
                         )
                       )}
@@ -3783,17 +4418,24 @@ function App() {
             </section>
 
             <section className="board-grid">
-              {currentRoom.players.map((player) => (
-                (() => {
-                  const linkedEventCount = playerRecentEventCounts[player.player_id] ?? 0;
-                  const linkedEventLabel = formatLinkedEventLabel(
-                    linkedEventCount,
-                    player.nickname,
-                  );
+	              {currentRoom.players.map((player) => (
+	                (() => {
+	                  const linkedEventCount = playerRecentEventCounts[player.player_id] ?? 0;
+	                  const linkedEventLabel = formatLinkedEventLabel(
+	                    linkedEventCount,
+	                    player.nickname,
+	                  );
+	                  const playerPosition = getPlayerPosition(player.player_id);
+	                  const playerCell = getPlayerCell(player.player_id);
+	                  const playerLevel = propertyLevels[playerPosition] ?? 0;
+	                  const playerRentHint = getRentHint(playerCell, playerLevel);
+	                  const playerOwnedCellCount = getOwnedCellsByPlayer(player.player_id).length;
+	                  const playerMortgagedCellCount = getMortgagedOwnedCellCount(player.player_id);
+	                  const isTradeTargetReady = selectedTradeTargetId === player.player_id;
 
-                  return (
-                <article
-                  key={player.player_id}
+	                  return (
+	                <article
+	                  key={player.player_id}
                   ref={(element) => {
                     if (element) {
                       playerCardRefs.current[player.player_id] = element;
@@ -3801,11 +4443,13 @@ function App() {
                       delete playerCardRefs.current[player.player_id];
                     }
                   }}
-                  className={`board-card ${player.player_id === playerId ? "is-you" : ""} ${
-                    focusedPlayerIdSet.has(player.player_id) ? "is-focused" : ""
-                  }`}
-                  role="button"
-                  tabIndex={0}
+	                  className={`board-card ${player.player_id === playerId ? "is-you" : ""} ${
+	                    focusedPlayerIdSet.has(player.player_id) ? "is-focused" : ""
+	                  } ${isTradeTargetReady ? "is-trade-target" : ""} ${
+	                    currentTurnPlayerId === player.player_id ? "is-current-turn" : ""
+	                  }`}
+	                  role="button"
+	                  tabIndex={0}
                   onClick={() => handlePlayerCardFocus(player)}
                   onKeyDown={(event) => {
                     if (event.key === "Enter" || event.key === " ") {
@@ -3813,96 +4457,58 @@ function App() {
                       handlePlayerCardFocus(player);
                     }
                   }}
-                >
-                  <div className="board-card-header">
-                    <h3>{player.nickname}</h3>
-                    {linkedEventCount > 0 && (
-                      <span
-                        className="board-card-event-count"
-                        title={linkedEventLabel}
-                        aria-label={linkedEventLabel}
-                      >
-                        {formatLinkedEventCount(linkedEventCount)}
-                      </span>
-                    )}
-                  </div>
-                  <p>
-                    Position:{" "}
-                    <strong>{currentRoom.game?.positions[player.player_id] ?? 0}</strong>
-                  </p>
-                  <p>
-                    Cell:{" "}
-                    <strong>
-                      {getCellByPosition(currentRoom.game?.positions[player.player_id] ?? 0)
-                        ?.name ?? "Unknown"}
-                    </strong>
-                  </p>
-                  {getCellByPosition(currentRoom.game?.positions[player.player_id] ?? 0)
-                    ?.cell_type === "property" && (
-                    <p>
-                      Upgrade level:{" "}
-                      <strong>
-                        {
-                          propertyLevels[
-                            currentRoom.game?.positions[player.player_id] ?? 0
-                          ] ?? 0
-                        }
-                      </strong>
-                    </p>
-                  )}
-                  {getRentHint(
-                    getCellByPosition(currentRoom.game?.positions[player.player_id] ?? 0),
-                    propertyLevels[currentRoom.game?.positions[player.player_id] ?? 0] ?? 0,
-                  ) && (
-                    <p>
-                      Rent rule:{" "}
-                      <strong>
-                        {
-                          getRentHint(
-                            getCellByPosition(currentRoom.game?.positions[player.player_id] ?? 0),
-                            propertyLevels[currentRoom.game?.positions[player.player_id] ?? 0] ?? 0,
-                          )
-                        }
-                      </strong>
-                    </p>
-                  )}
-                  <p>
-                    Cash: <strong>${currentRoom.game?.cash[player.player_id] ?? 0}</strong>
-                  </p>
-                  <p>
-                    Owned cells:{" "}
-                    <strong>
-                      {
-                        Object.values(propertyOwners).filter(
-                          (ownerPlayerId) => ownerPlayerId === player.player_id,
-                        ).length
-                      }
-                    </strong>
-                  </p>
-                  <p>
-                    Mortgaged cells:{" "}
-                    <strong>
-                      {
-                        Object.entries(propertyMortgaged).filter(
-                          ([position, isMortgaged]) =>
-                            isMortgaged &&
-                            propertyOwners[Number(position)] === player.player_id,
-                        ).length
-                      }
-                    </strong>
-                  </p>
+	                  >
+	                    <div className="board-card-header">
+	                      <h3>{player.nickname}</h3>
+	                      <div className="board-card-badges">
+	                        {isTradeTargetReady && (
+	                          <span className="board-card-target-badge">Trade target</span>
+	                        )}
+	                        {linkedEventCount > 0 && (
+	                          <span
+	                            className="board-card-event-count"
+	                            title={linkedEventLabel}
+	                            aria-label={linkedEventLabel}
+	                          >
+	                            {formatLinkedEventCount(linkedEventCount)}
+	                          </span>
+	                        )}
+	                      </div>
+	                  </div>
+	                  <p>
+	                    On:{" "}
+	                    <strong>
+	                      {playerCell?.name ?? `Cell ${playerPosition}`}
+	                    </strong>
+	                  </p>
+	                  {playerCell?.cell_type === "property" && (
+	                    <p>
+	                      Upgrade level:{" "}
+	                      <strong>{playerLevel}</strong>
+	                    </p>
+	                  )}
+	                  {playerRentHint && (
+	                    <p><strong>{playerRentHint}</strong></p>
+	                  )}
+	                  <p>
+	                    Cash: <strong>${currentRoom.game?.cash[player.player_id] ?? 0}</strong>
+	                  </p>
+	                  <p>
+	                    Owned cells:{" "}
+	                    <strong>{playerOwnedCellCount}</strong>
+	                  </p>
+	                  <p>
+	                    Mortgaged cells:{" "}
+	                    <strong>{playerMortgagedCellCount}</strong>
+	                  </p>
                   <p>
                     Status:{" "}
                     <strong>
-                      {currentRoom.game?.in_jail?.[player.player_id]
-                        ? "In jail"
-                        : "Free"}
-                    </strong>
-                  </p>
-                  <p>
-                    Turn owner:{" "}
-                    <strong>
-                      {currentTurnPlayerId === player.player_id ? "Yes" : "No"}
+                      {currentTurnPlayerId === player.player_id
+                        ? "Their turn"
+                        : currentRoom.game?.in_jail?.[player.player_id]
+                          ? "In jail"
+                          : "Waiting"}
                     </strong>
                   </p>
                 </article>
