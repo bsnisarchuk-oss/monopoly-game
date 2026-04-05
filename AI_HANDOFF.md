@@ -13,17 +13,38 @@ Online Monopoly-style game for learning and iterative AI-assisted development.
 - Backend: `U:\Monopoly\backend`
 
 ## Run
+### Quickest Windows start
+```powershell
+cd U:\Monopoly
+.\start-game.cmd
+```
+
 ### Backend
 ```powershell
 cd U:\Monopoly\backend
-.\.venv\Scripts\python -m uvicorn main:app --reload
+.\.venv\Scripts\python -m uvicorn main:app
 ```
+
+- Use `backend\.venv`, not the root `.venv`
+- `Activate.ps1` is optional; you can run the backend Python directly
+- If `127.0.0.1:8000` is already responding, the backend is already running
 
 ### Frontend
 ```powershell
 cd U:\Monopoly\frontend
 npm.cmd run dev
 ```
+
+### Root helpers
+- `U:\Monopoly\start-backend.cmd`
+- `U:\Monopoly\start-frontend.cmd`
+- `U:\Monopoly\start-game.cmd`
+
+### Latest launch notes
+- Prefer the root helper scripts on Windows instead of `Activate.ps1`
+- Backend packages are in `U:\Monopoly\backend\.venv`
+- The root `U:\Monopoly\.venv` can be misleading for backend startup
+- If the browser only shows the soft gradient background, refresh after pulling the latest frontend fix
 
 ### Open
 - Frontend: `http://localhost:5173`
@@ -34,6 +55,9 @@ As of the latest handoff update:
 - Backend tests: `57/57 OK`
 - Frontend: `npm.cmd run lint` OK
 - Frontend: `npm.cmd run build` OK
+- Frontend blank first screen bug fixed:
+  - cause was unsafe `currentRoom.players` access before room data existed
+  - fixed in `U:\Monopoly\frontend\src\App.jsx`
 
 ## Core Architecture Rules
 - Server is authoritative.
