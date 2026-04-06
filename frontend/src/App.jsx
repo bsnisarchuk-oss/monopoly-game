@@ -1,4 +1,25 @@
 import { useEffect, useRef, useState } from "react";
+import {
+  buildActionGuide,
+  buildActionGuideJumpAnnouncement,
+  buildActionGuideJumpButtonLabel,
+  buildGuideFocusSelector,
+} from "./components/actionGuideHelpers";
+import EliminatedGameView from "./components/EliminatedGameView";
+import FinishedGameView from "./components/FinishedGameView";
+import GameView from "./components/GameView";
+import LandingPanel from "./components/LandingPanel";
+import LobbyView from "./components/LobbyView";
+import PlayerToken from "./components/PlayerToken";
+import {
+  getTokenMovementOffset,
+  splitJailOccupants,
+} from "./components/boardHelpers";
+import {
+  EMPTY_RECENT_EVENTS,
+  filterRecentEventsByKind,
+  hasRecentEventReferences,
+} from "./components/recentEventsHelpers";
 
 const API_BASE_URL = "http://127.0.0.1:8000";
 const SESSION_STORAGE_KEY = "monopoly_player_session";
@@ -10,94 +31,11 @@ const JAIL_POSITION = 10;
 const PROPERTY_RENT_MULTIPLIERS = [1, 2, 4, 7, 11];
 const RECENT_EVENT_HIGHLIGHT_MS = 4500;
 const TOKEN_MOVE_FEEDBACK_MS = 1200;
-const TOKEN_MOVE_MAX_OFFSET_PX = 26;
 const MOBILE_RECENT_EVENTS_BREAKPOINT = "(max-width: 640px)";
-const EMPTY_RECENT_EVENTS = [];
 const PLAYER_TOKEN_COLORS = ["#d94f3d", "#3b7fd4", "#3aaa5e", "#e09b2a"];
 const ACTION_GUIDE_FLASH_MS = 900;
 const ACTION_SECTION_FOCUS_SELECTOR =
   'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
-
-function buildGuideFocusSelector(focusKey) {
-  return focusKey ? `[data-guide-focus="${focusKey}"]:not([disabled])` : null;
-}
-
-function getActionSectionLabel(sectionKey) {
-  switch (sectionKey) {
-    case "actions":
-      return "Turn actions";
-    case "purchase":
-      return "Buy or pass";
-    case "auction":
-      return "Auction";
-    case "trade":
-      return "Trade desk";
-    case "mortgage":
-      return "Mortgage desk";
-    case "upgrade":
-      return "Upgrades desk";
-    default:
-      return "Active section";
-  }
-}
-
-function getActionFocusAnnouncementLabel(focusKey) {
-  switch (focusKey) {
-    case "pay-jail-fine":
-      return "Pay fine";
-    case "declare-bankruptcy":
-      return "Declare bankruptcy";
-    case "roll-dice":
-      return "Roll dice";
-    case "buy-property":
-      return "Buy property";
-    case "skip-purchase":
-      return "Pass on purchase";
-    case "auction-bid-input":
-      return "Your bid";
-    case "auction-place-bid":
-      return "Place bid";
-    case "auction-pass":
-      return "Pass";
-    case "accept-trade":
-      return "Accept trade";
-    case "reject-trade":
-      return "Reject trade";
-    case "trade-offer-cell":
-      return "Offer cell";
-    case "trade-target-player":
-      return "Trade with";
-    case "trade-cash-requested":
-      return "Cash requested";
-    case "propose-trade":
-      return "Propose trade";
-    case "mortgage-first":
-      return "Mortgage";
-    case "unmortgage-first":
-      return "Unmortgage";
-    case "upgrade-first":
-      return "Upgrade";
-    case "sell-upgrade-first":
-      return "Sell upgrade";
-    default:
-      return null;
-  }
-}
-
-function buildActionGuideJumpAnnouncement(sectionKey, focusKey) {
-  const sectionLabel = getActionSectionLabel(sectionKey);
-  const focusLabel = getActionFocusAnnouncementLabel(focusKey);
-
-  if (!focusLabel) {
-    return `Jumped to ${sectionLabel}.`;
-  }
-
-  return `Jumped to ${sectionLabel}. Focused ${focusLabel}.`;
-}
-
-function buildActionGuideJumpButtonLabel(sectionKey) {
-  return `Jump to ${getActionSectionLabel(sectionKey)}`;
-}
 
 function loadStoredSession() {
   if (typeof window === "undefined") {
@@ -317,893 +255,6 @@ function getRentHint(cell, level = 0) {
   return null;
 }
 
-function getCountLabel(count, singular, plural = `${singular}s`) {
-  return `${count} ${count === 1 ? singular : plural}`;
-}
-
-function BankruptcySummaryCard({ summary, title }) {
-  if (!summary) {
-    return null;
-  }
-
-  const transferParts = [];
-  if (summary.cash_collected > 0) {
-    transferParts.push(`$${summary.cash_collected} cash`);
-  }
-  if (summary.property_count > 0) {
-    transferParts.push(getCountLabel(summary.property_count, "property"));
-  }
-
-  const transferLine =
-    summary.creditor_type === "player"
-      ? transferParts.length > 0
-        ? `${summary.creditor_name} collected ${transferParts.join(" and ")} from the bankruptcy.`
-        : `${summary.creditor_name} did not collect extra cash or properties from the bankruptcy.`
-      : summary.property_count > 0
-        ? `${getCountLabel(summary.property_count, "property")} returned to the bank.`
-        : "No properties were left to return to the bank.";
-  const liquidationLine =
-    summary.liquidated_upgrade_count > 0
-      ? `${getCountLabel(summary.liquidated_upgrade_count, "upgrade")} ${
-          summary.liquidated_upgrade_count === 1 ? "was" : "were"
-        } sold back to the bank for $${summary.liquidation_cash} before properties transferred.`
-      : "No upgrades needed liquidation.";
-  const mortgageLine =
-    summary.mortgaged_property_count > 0
-      ? `${getCountLabel(summary.mortgaged_property_count, "property")} stayed mortgaged when transferred.`
-      : "No mortgaged properties were part of this transfer.";
-
-  return (
-    <section className="bankruptcy-recap">
-      <h3>{title}</h3>
-      <p className="bankruptcy-recap-message">{summary.message}</p>
-
-      <div className="bankruptcy-recap-stats">
-        <article className="bankruptcy-recap-stat">
-          <span>Debtor</span>
-          <strong>{summary.debtor_nickname}</strong>
-        </article>
-        <article className="bankruptcy-recap-stat">
-          <span>Creditor</span>
-          <strong>{summary.creditor_name}</strong>
-        </article>
-        <article className="bankruptcy-recap-stat">
-          <span>Properties</span>
-          <strong>{summary.property_count}</strong>
-        </article>
-        <article className="bankruptcy-recap-stat">
-          <span>Liquidated</span>
-          <strong>${summary.liquidation_cash}</strong>
-        </article>
-      </div>
-
-      <div className="bankruptcy-recap-notes">
-        <p>{transferLine}</p>
-        <p>{liquidationLine}</p>
-        <p>{mortgageLine}</p>
-      </div>
-    </section>
-  );
-}
-
-function DeskSectionHeader({
-  title,
-  sectionId,
-  statusLabel,
-  statusTone,
-  note,
-  isCollapsible = false,
-  isCollapsed = false,
-  onToggleCollapse,
-}) {
-  return (
-    <div className="desk-card-header">
-      <div className="desk-card-title-row">
-        <h3>{title}</h3>
-        <div className="desk-card-header-actions">
-          <span className={`desk-card-status is-${statusTone}`}>{statusLabel}</span>
-          {isCollapsible && (
-            <button
-              type="button"
-              className="desk-card-toggle"
-              aria-expanded={!isCollapsed}
-              aria-controls={sectionId}
-              onClick={onToggleCollapse}
-            >
-              {isCollapsed ? "Show details" : "Hide details"}
-            </button>
-          )}
-        </div>
-      </div>
-      {note && (!isCollapsible || !isCollapsed) && <p className="desk-card-note">{note}</p>}
-    </div>
-  );
-}
-
-function formatRecentEventKind(kind) {
-  switch (kind) {
-    case "auction":
-      return "Auction";
-    case "bankruptcy":
-      return "Bankruptcy";
-    case "jail":
-      return "Jail";
-    case "property":
-      return "Property";
-    case "roll":
-      return "Roll";
-    case "trade":
-      return "Trade";
-    default:
-      return "System";
-  }
-}
-
-function groupRecentEvents(events) {
-  if (!events || events.length === 0) {
-    return [];
-  }
-
-  const groups = [];
-  for (const event of events) {
-    const eventKind = event.kind ?? "system";
-    const currentGroup = groups.at(-1);
-
-    if (currentGroup && currentGroup.kind === eventKind) {
-      currentGroup.events.push(event);
-      currentGroup.oldestTurnNumber = event.turn_number;
-      continue;
-    }
-
-    groups.push({
-      kind: eventKind,
-      newestTurnNumber: event.turn_number,
-      oldestTurnNumber: event.turn_number,
-      events: [event],
-    });
-  }
-
-  return groups;
-}
-
-function formatRecentEventTurnLabel(group) {
-  if (group.newestTurnNumber === group.oldestTurnNumber) {
-    return `Turn ${group.newestTurnNumber}`;
-  }
-
-  return `Turns ${group.newestTurnNumber}-${group.oldestTurnNumber}`;
-}
-
-function buildRecentEventGroupKey(group) {
-  const oldestEvent = group.events[group.events.length - 1];
-  const anchorEventId = oldestEvent?.event_id ?? oldestEvent?.turn_number ?? group.oldestTurnNumber ?? 0;
-
-  return `${group.kind}-${anchorEventId}`;
-}
-
-function hasRecentEventReferences(event) {
-  return (
-    Number.isInteger(event?.cell_index) ||
-    Boolean(event?.player_id) ||
-    Boolean(event?.target_player_id)
-  );
-}
-
-function recentEventMatchesEntityFilter(event, entityFilter) {
-  if (!entityFilter) {
-    return true;
-  }
-
-  if (entityFilter.type === "cell") {
-    return event.cell_index === entityFilter.cellIndex;
-  }
-
-  if (entityFilter.type === "player") {
-    return entityFilter.playerIds.some(
-      (playerId) => event.player_id === playerId || event.target_player_id === playerId,
-    );
-  }
-
-  return true;
-}
-
-function filterRecentEventsByKind(events, selectedKind) {
-  if (selectedKind === "all") {
-    return events;
-  }
-
-  return events.filter((event) => (event.kind ?? "system") === selectedKind);
-}
-
-function formatLinkedEventCount(count) {
-  return count > 9 ? "9+" : String(count);
-}
-
-function formatLinkedEventLabel(count, subjectLabel) {
-  return `${count} linked event${count === 1 ? "" : "s"} for ${subjectLabel}`;
-}
-
-function getPlayerTokenLabel(nickname) {
-  return (nickname?.trim()?.[0] ?? "?").toUpperCase();
-}
-
-function formatRecentEventsAnnouncementScope(activeKind, entityFilter) {
-  const baseScope =
-    activeKind === "all"
-      ? "the current recent events view"
-      : `${formatRecentEventKind(activeKind).toLowerCase()} events`;
-
-  if (!entityFilter?.label) {
-    return baseScope;
-  }
-
-  if (activeKind === "all") {
-    return `events linked to ${entityFilter.label}`;
-  }
-
-  return `${baseScope} linked to ${entityFilter.label}`;
-}
-
-const KIND_ORDER = ["roll", "property", "auction", "trade", "jail", "bankruptcy", "system"];
-
-function RecentEventsCard({
-  events,
-  title,
-  maxGroups = 4,
-  selectedKind = "all",
-  expandedGroups = {},
-  freshEventIds = {},
-  focusedEventId = null,
-  entityFilter = null,
-  onSelectKind,
-  onToggleGroup,
-  onFocusEvent,
-  onClearFocus,
-  showNavigationHelp = false,
-  isNavigationHelpCollapsed = false,
-  onToggleNavigationHelp,
-  onResetNavigationHelp,
-  announceUpdates = false,
-  clearFocusAnnouncementId = 0,
-}) {
-  const [isActionsMenuOpen, setIsActionsMenuOpen] = useState(false);
-  const actionsMenuContainerRef = useRef(null);
-  const actionsMenuToggleRef = useRef(null);
-  const actionsMenuItemRefs = useRef([]);
-  const liveStatusRef = useRef(null);
-  const liveAnnouncementFrameRef = useRef(null);
-  const previousLiveSnapshotRef = useRef(null);
-  const shouldRestoreMenuFocusRef = useRef(false);
-  const pendingActionsMenuFocusIndexRef = useRef(null);
-  const safeEvents = events ?? EMPTY_RECENT_EVENTS;
-
-  function closeActionsMenu({ returnFocus = false } = {}) {
-    setIsActionsMenuOpen(false);
-    shouldRestoreMenuFocusRef.current = returnFocus;
-    pendingActionsMenuFocusIndexRef.current = null;
-  }
-
-  function focusActionsMenuItem(index) {
-    const target = actionsMenuItemRefs.current[index];
-    if (target && target.offsetParent !== null) {
-      target.focus();
-    }
-  }
-
-  function openActionsMenu({ focusIndex = null } = {}) {
-    pendingActionsMenuFocusIndexRef.current = focusIndex;
-    setIsActionsMenuOpen(true);
-  }
-
-  useEffect(() => {
-    if (!isActionsMenuOpen && shouldRestoreMenuFocusRef.current) {
-      const toggle = actionsMenuToggleRef.current;
-      if (toggle && toggle.offsetParent !== null) {
-        toggle.focus();
-      }
-      shouldRestoreMenuFocusRef.current = false;
-    }
-  }, [isActionsMenuOpen]);
-
-  useEffect(() => {
-    if (isActionsMenuOpen && pendingActionsMenuFocusIndexRef.current != null) {
-      focusActionsMenuItem(pendingActionsMenuFocusIndexRef.current);
-      pendingActionsMenuFocusIndexRef.current = null;
-    }
-  }, [isActionsMenuOpen]);
-
-  useEffect(() => {
-    if (!isActionsMenuOpen) return undefined;
-
-    function handleMouseDown(e) {
-      if (actionsMenuContainerRef.current && !actionsMenuContainerRef.current.contains(e.target)) {
-        closeActionsMenu();
-      }
-    }
-
-    function handleKeyDown(e) {
-      if (e.key === "Escape") {
-        closeActionsMenu({ returnFocus: true });
-      }
-    }
-
-    document.addEventListener("mousedown", handleMouseDown);
-    document.addEventListener("keydown", handleKeyDown);
-    return () => {
-      document.removeEventListener("mousedown", handleMouseDown);
-      document.removeEventListener("keydown", handleKeyDown);
-    };
-  }, [isActionsMenuOpen]);
-
-  const availableKinds = KIND_ORDER.filter((k) => safeEvents.some((e) => (e.kind ?? "system") === k));
-  const activeKind =
-    selectedKind !== "all" && !availableKinds.includes(selectedKind) ? "all" : selectedKind;
-  const titleSlug = title.toLowerCase().replace(/[^a-z0-9]+/g, "-");
-  const sectionHeadingId = `${titleSlug}-heading`;
-  const navigationHelpId = `${titleSlug}-navigation-help`;
-  const actionsMenuId = `${titleSlug}-actions-menu`;
-  const actionsMenuToggleId = `${titleSlug}-actions-toggle`;
-  const headerActions = [];
-
-  const filteredEvents = filterRecentEventsByKind(safeEvents, activeKind);
-  const entityScopedEvents = filteredEvents.filter((event) =>
-    recentEventMatchesEntityFilter(event, entityFilter),
-  );
-  const groupedEvents = groupRecentEvents(entityScopedEvents).slice(0, maxGroups);
-  const hasFocusControls = (focusedEventId != null || entityFilter != null) && onClearFocus;
-  const entityFilterKey = entityFilter
-    ? `${entityFilter.type}:${entityFilter.label}:${entityFilter.cellIndex ?? ""}:${(entityFilter.playerIds ?? []).join(",")}`
-    : "all";
-  const visibleFreshEventIds = entityScopedEvents
-    .filter((event) => freshEventIds[event.event_id])
-    .map((event) => event.event_id);
-  const visibleFreshKey = visibleFreshEventIds.join(",");
-  const announcementScopeLabel = formatRecentEventsAnnouncementScope(activeKind, entityFilter);
-  const clearFocusScopeLabel =
-    activeKind !== "all" ? `${formatRecentEventKind(activeKind).toLowerCase()} events` : null;
-
-  function queueLiveAnnouncement(message) {
-    if (!liveStatusRef.current || !message) {
-      return;
-    }
-
-    if (liveAnnouncementFrameRef.current != null) {
-      window.cancelAnimationFrame(liveAnnouncementFrameRef.current);
-      liveAnnouncementFrameRef.current = null;
-    }
-
-    liveStatusRef.current.textContent = "";
-    liveAnnouncementFrameRef.current = window.requestAnimationFrame(() => {
-      if (liveStatusRef.current) {
-        liveStatusRef.current.textContent = message;
-      }
-      liveAnnouncementFrameRef.current = null;
-    });
-  }
-
-  useEffect(() => {
-    const currentSnapshot = {
-      activeKind,
-      clearFocusAnnouncementId,
-      entityFilterKey,
-      visibleFreshKey,
-      eventCount: entityScopedEvents.length,
-      groupCount: groupedEvents.length,
-    };
-
-    const previousSnapshot = previousLiveSnapshotRef.current;
-    previousLiveSnapshotRef.current = currentSnapshot;
-
-    if (!announceUpdates || !previousSnapshot || !liveStatusRef.current) {
-      return undefined;
-    }
-
-    const filterChanged =
-      previousSnapshot.activeKind !== activeKind || previousSnapshot.entityFilterKey !== entityFilterKey;
-    const clearFocusTriggered =
-      clearFocusAnnouncementId > 0 &&
-      previousSnapshot.clearFocusAnnouncementId !== clearFocusAnnouncementId;
-    const freshEventsChanged = visibleFreshKey !== previousSnapshot.visibleFreshKey && visibleFreshEventIds.length > 0;
-
-    if ((!filterChanged || clearFocusTriggered) && !freshEventsChanged) {
-      return undefined;
-    }
-
-    let announcement = "";
-
-    if (filterChanged) {
-      if (entityScopedEvents.length === 0) {
-        announcement = `Recent events updated for ${announcementScopeLabel}. No events currently match this view.`;
-      } else {
-        announcement = `Recent events updated for ${announcementScopeLabel}. Showing ${getCountLabel(entityScopedEvents.length, "event")} in ${getCountLabel(groupedEvents.length, "group")}.`;
-      }
-    } else if (freshEventsChanged) {
-      announcement = `${getCountLabel(visibleFreshEventIds.length, "new event")} in ${announcementScopeLabel}.`;
-    }
-
-    if (!announcement) {
-      return undefined;
-    }
-
-    queueLiveAnnouncement(announcement);
-
-    return () => {
-      if (liveAnnouncementFrameRef.current != null) {
-        window.cancelAnimationFrame(liveAnnouncementFrameRef.current);
-        liveAnnouncementFrameRef.current = null;
-      }
-    };
-  }, [
-    activeKind,
-    announceUpdates,
-    announcementScopeLabel,
-    clearFocusAnnouncementId,
-    entityFilterKey,
-    entityScopedEvents.length,
-    groupedEvents.length,
-    visibleFreshEventIds.length,
-    visibleFreshKey,
-  ]);
-
-  useEffect(() => {
-    const previousClearFocusAnnouncementId = previousLiveSnapshotRef.current?.clearFocusAnnouncementId ?? 0;
-
-    if (
-      !announceUpdates ||
-      !liveStatusRef.current ||
-      clearFocusAnnouncementId === 0 ||
-      clearFocusAnnouncementId === previousClearFocusAnnouncementId
-    ) {
-      return undefined;
-    }
-
-    queueLiveAnnouncement(
-      clearFocusScopeLabel
-        ? `Recent events focus cleared. Showing ${clearFocusScopeLabel}.`
-        : "Recent events focus cleared.",
-    );
-
-    return () => {
-      if (liveAnnouncementFrameRef.current != null) {
-        window.cancelAnimationFrame(liveAnnouncementFrameRef.current);
-        liveAnnouncementFrameRef.current = null;
-      }
-    };
-  }, [announceUpdates, clearFocusAnnouncementId, clearFocusScopeLabel]);
-
-  if (showNavigationHelp && onToggleNavigationHelp) {
-    headerActions.push({
-      key: "toggle-help",
-      label: isNavigationHelpCollapsed ? "Show help" : "Hide help",
-      className: "recent-events-help-toggle",
-      ariaExpanded: !isNavigationHelpCollapsed,
-      ariaControls: navigationHelpId,
-    });
-  }
-
-  if (showNavigationHelp && onResetNavigationHelp) {
-    headerActions.push({
-      key: "reset-help",
-      label: "Reset UI hints",
-      className: "recent-events-reset-hints",
-    });
-  }
-
-  if (hasFocusControls) {
-    headerActions.push({
-      key: "clear-focus",
-      label: "Clear focus",
-      className: "recent-events-clear-focus",
-    });
-  }
-
-  function handleHeaderAction(actionKey) {
-    if (actionKey === "toggle-help") {
-      onToggleNavigationHelp?.();
-    } else if (actionKey === "reset-help") {
-      onResetNavigationHelp?.();
-    } else if (actionKey === "clear-focus") {
-      onClearFocus?.();
-    }
-
-    closeActionsMenu({ returnFocus: true });
-  }
-
-  function handleActionsMenuToggleKeyDown(event) {
-    if (headerActions.length === 0) {
-      return;
-    }
-
-    if (event.key === "Enter" || event.key === " ") {
-      event.preventDefault();
-      if (isActionsMenuOpen) {
-        closeActionsMenu();
-      } else {
-        openActionsMenu({ focusIndex: 0 });
-      }
-      return;
-    }
-
-    if (event.key === "ArrowDown" || event.key === "Home") {
-      event.preventDefault();
-      openActionsMenu({ focusIndex: 0 });
-      return;
-    }
-
-    if (event.key === "ArrowUp" || event.key === "End") {
-      event.preventDefault();
-      openActionsMenu({ focusIndex: headerActions.length - 1 });
-    }
-  }
-
-  function handleActionsMenuItemKeyDown(event, actionIndex) {
-    if (headerActions.length === 0) {
-      return;
-    }
-
-    if (event.key === "ArrowDown") {
-      event.preventDefault();
-      focusActionsMenuItem((actionIndex + 1) % headerActions.length);
-      return;
-    }
-
-    if (event.key === "ArrowUp") {
-      event.preventDefault();
-      focusActionsMenuItem((actionIndex - 1 + headerActions.length) % headerActions.length);
-      return;
-    }
-
-    if (event.key === "Home") {
-      event.preventDefault();
-      focusActionsMenuItem(0);
-      return;
-    }
-
-    if (event.key === "End") {
-      event.preventDefault();
-      focusActionsMenuItem(headerActions.length - 1);
-      return;
-    }
-
-    if (event.key === "Tab") {
-      closeActionsMenu({ returnFocus: false });
-    }
-  }
-
-  if (safeEvents.length === 0) {
-    return null;
-  }
-
-  return (
-    <section className="recent-events-card" aria-labelledby={sectionHeadingId}>
-      {announceUpdates && (
-        <div ref={liveStatusRef} className="sr-only" aria-live="polite" aria-atomic="true" />
-      )}
-      <div className="recent-events-header-row">
-        <h3 id={sectionHeadingId}>{title}</h3>
-        {headerActions.length > 0 && (
-          <>
-            <div className="recent-events-header-actions recent-events-header-actions-inline">
-              {headerActions.map((action) => (
-                <button
-                  key={action.key}
-                  type="button"
-                  className={action.className}
-                  onClick={() => handleHeaderAction(action.key)}
-                  aria-expanded={action.ariaExpanded}
-                  aria-controls={action.ariaControls}
-                >
-                  {action.label}
-                </button>
-              ))}
-            </div>
-            <div className="recent-events-actions-menu" ref={actionsMenuContainerRef}>
-              <button
-                ref={actionsMenuToggleRef}
-                type="button"
-                id={actionsMenuToggleId}
-                className="recent-events-actions-menu-toggle"
-                onClick={() => {
-                  if (isActionsMenuOpen) {
-                    closeActionsMenu();
-                  } else {
-                    openActionsMenu();
-                  }
-                }}
-                onKeyDown={handleActionsMenuToggleKeyDown}
-                aria-haspopup="menu"
-                aria-expanded={isActionsMenuOpen}
-                aria-controls={actionsMenuId}
-                aria-label="More options"
-              >
-                More
-              </button>
-              {isActionsMenuOpen && (
-                <div
-                  id={actionsMenuId}
-                  className="recent-events-actions-menu-panel"
-                  role="menu"
-                  aria-orientation="vertical"
-                  aria-labelledby={actionsMenuToggleId}
-                >
-                  {headerActions.map((action, actionIndex) => (
-                    <button
-                      key={action.key}
-                      ref={(element) => {
-                        actionsMenuItemRefs.current[actionIndex] = element;
-                      }}
-                      type="button"
-                      className={`recent-events-actions-menu-item ${action.className}`}
-                      onClick={() => handleHeaderAction(action.key)}
-                      onKeyDown={(event) => handleActionsMenuItemKeyDown(event, actionIndex)}
-                      role="menuitem"
-                    >
-                      {action.label}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-          </>
-        )}
-      </div>
-      {availableKinds.length > 1 && (
-        <div className="recent-events-filters" role="group" aria-label="Filter by event type">
-          <button
-            type="button"
-            className={`recent-events-filter ${activeKind === "all" ? "is-active" : ""}`}
-            onClick={() => onSelectKind?.("all")}
-            aria-pressed={activeKind === "all"}
-          >
-            All
-          </button>
-          {availableKinds.map((kind) => (
-            <button
-              key={kind}
-              type="button"
-              className={`recent-events-filter recent-events-filter-${kind} ${
-                activeKind === kind ? "is-active" : ""
-              }`}
-              onClick={() => onSelectKind?.(kind)}
-              aria-pressed={activeKind === kind}
-            >
-              {formatRecentEventKind(kind)}
-            </button>
-          ))}
-        </div>
-      )}
-      {entityFilter && (
-        <p className="recent-events-context-note">
-          Showing linked events for <strong>{entityFilter.label}</strong>.
-        </p>
-      )}
-      {showNavigationHelp && !isNavigationHelpCollapsed && (
-        <div
-          id={navigationHelpId}
-          className="recent-events-legend"
-          aria-label="Recent events navigation help"
-        >
-          <p className="recent-events-legend-title">How to use</p>
-          <div className="recent-events-legend-items">
-            <span className="recent-events-legend-pill">Click event {"\u2192"} highlight on board</span>
-            <span className="recent-events-legend-pill">Click cell {"\u2192"} filter by cell</span>
-            <span className="recent-events-legend-pill">Click player {"\u2192"} filter by player</span>
-          </div>
-        </div>
-      )}
-      <div className="recent-events-list">
-        {groupedEvents.length === 0 && (
-          <p className="recent-events-empty">
-            No recent events match this focus yet.
-          </p>
-        )}
-        {groupedEvents.map((group) => (
-          (() => {
-            const groupKey = buildRecentEventGroupKey(group);
-            const canCollapse = group.events.length > 2;
-            const groupHasFocus = group.events.some((event) => event.event_id === focusedEventId);
-            const isExpanded = expandedGroups[groupKey] ?? false;
-            const freshEventCount = group.events.filter((event) => freshEventIds[event.event_id]).length;
-            const visibleEvents = canCollapse && !isExpanded ? group.events.slice(0, 2) : group.events;
-            const hiddenCount = group.events.length - visibleEvents.length;
-
-            const clusterRegionId = `${groupKey}-cluster`;
-
-            return (
-              <article
-                key={groupKey}
-                className={`recent-event-item ${group.events.length > 1 ? "is-grouped" : ""} ${
-                  freshEventCount > 0 ? "is-fresh" : ""
-                } ${groupHasFocus ? "is-focused" : ""}`}
-                aria-label={group.events[0].summary}
-              >
-                <div className="recent-event-header">
-                  <p className="recent-event-meta">{formatRecentEventTurnLabel(group)}</p>
-                  <div className="recent-event-badges">
-                    <span className={`recent-event-kind recent-event-kind-${group.kind}`}>
-                      {formatRecentEventKind(group.kind)}
-                    </span>
-                    {freshEventCount > 0 && (
-                      <span className="recent-event-new">
-                        {freshEventCount === 1 ? "New" : `${freshEventCount} new`}
-                      </span>
-                    )}
-                    {group.events.length > 1 && (
-                      <span className="recent-event-count" aria-hidden="true">{group.events.length}x</span>
-                    )}
-                    {group.events.length > 1 && (
-                      <span className="sr-only">{group.events.length} events</span>
-                    )}
-                  </div>
-                </div>
-
-                {group.events.length === 1 ? (
-                  (() => {
-                    const event = group.events[0];
-                    const isActionable = Boolean(onFocusEvent) && hasRecentEventReferences(event);
-                    const EntryTag = isActionable ? "button" : "div";
-
-                    return (
-                      <EntryTag
-                        type={isActionable ? "button" : undefined}
-                        className={`recent-event-entry ${isActionable ? "is-actionable" : ""} ${
-                          focusedEventId === event.event_id ? "is-focused" : ""
-                        }`}
-                        onClick={isActionable ? () => onFocusEvent(event) : undefined}
-                        aria-pressed={isActionable ? focusedEventId === event.event_id : undefined}
-                      >
-                        <p className="recent-event-summary">{event.summary}</p>
-                        {event.details.length > 1 && (
-                          <div className="recent-event-details">
-                            {event.details.slice(1).map((detail, detailIndex) => (
-                              <p key={detailIndex}>{detail}</p>
-                            ))}
-                          </div>
-                        )}
-                      </EntryTag>
-                    );
-                  })()
-                ) : (
-                  <>
-                    <div className="recent-event-cluster" id={clusterRegionId}>
-                      {visibleEvents.map((event, eventIndex) => {
-                        const isActionable = Boolean(onFocusEvent) && hasRecentEventReferences(event);
-                        const EntryTag = isActionable ? "button" : "div";
-
-                        return (
-                          <EntryTag
-                            key={event.event_id ?? `${event.turn_number}-${eventIndex}-${event.summary}`}
-                            type={isActionable ? "button" : undefined}
-                            className={`recent-event-cluster-item ${
-                              freshEventIds[event.event_id] ? "is-fresh" : ""
-                            } ${isActionable ? "is-actionable" : ""} ${
-                              focusedEventId === event.event_id ? "is-focused" : ""
-                            }`}
-                            onClick={isActionable ? () => onFocusEvent(event) : undefined}
-                            aria-pressed={isActionable ? focusedEventId === event.event_id : undefined}
-                          >
-                            <p className="recent-event-cluster-turn">Turn {event.turn_number}</p>
-                            <p className="recent-event-summary">{event.summary}</p>
-                            {event.details.length > 1 && (
-                              <div className="recent-event-details">
-                                {event.details.slice(1).map((detail, detailIndex) => (
-                                  <p key={detailIndex}>{detail}</p>
-                                ))}
-                              </div>
-                            )}
-                          </EntryTag>
-                        );
-                      })}
-                    </div>
-
-                    {canCollapse && (
-                      <button
-                        type="button"
-                        className="recent-event-toggle"
-                        onClick={() => onToggleGroup?.(groupKey)}
-                        aria-expanded={isExpanded}
-                        aria-controls={clusterRegionId}
-                        aria-label={
-                          isExpanded
-                            ? "Show fewer events in this group"
-                            : `Show ${hiddenCount} more events in this group`
-                        }
-                      >
-                        {isExpanded ? "Show less" : `Show ${hiddenCount} more`}
-                      </button>
-                    )}
-                  </>
-                )}
-              </article>
-            );
-          })()
-        ))}
-      </div>
-    </section>
-  );
-}
-
-function getBoardPlacement(index) {
-  if (index >= 0 && index <= 10) {
-    return { row: 11, column: 11 - index };
-  }
-
-  if (index >= 11 && index <= 20) {
-    return { row: 11 - (index - 10), column: 1 };
-  }
-
-  if (index >= 21 && index <= 30) {
-    return { row: 1, column: index - 19 };
-  }
-
-  return { row: index - 29, column: 11 };
-}
-
-function getBoardSide(index) {
-  if (index === 0 || index === 10 || index === 20 || index === 30) {
-    return "corner";
-  }
-
-  if (index > 0 && index < 10) {
-    return "bottom";
-  }
-
-  if (index > 10 && index < 20) {
-    return "left";
-  }
-
-  if (index > 20 && index < 30) {
-    return "top";
-  }
-
-  return "right";
-}
-
-function clampNumber(value, min, max) {
-  return Math.min(max, Math.max(min, value));
-}
-
-function getTokenMovementOffset(fromPosition, toPosition) {
-  if (
-    !Number.isInteger(fromPosition) ||
-    !Number.isInteger(toPosition) ||
-    fromPosition === toPosition
-  ) {
-    return { x: 0, y: 0 };
-  }
-
-  const fromPlacement = getBoardPlacement(fromPosition);
-  const toPlacement = getBoardPlacement(toPosition);
-
-  return {
-    x: clampNumber(
-      (fromPlacement.column - toPlacement.column) * 10,
-      -TOKEN_MOVE_MAX_OFFSET_PX,
-      TOKEN_MOVE_MAX_OFFSET_PX,
-    ),
-    y: clampNumber(
-      (fromPlacement.row - toPlacement.row) * 10,
-      -TOKEN_MOVE_MAX_OFFSET_PX,
-      TOKEN_MOVE_MAX_OFFSET_PX,
-    ),
-  };
-}
-
-function splitJailOccupants(players, inJailByPlayerId) {
-  const jailPlayers = [];
-  const visitingPlayers = [];
-
-  for (const player of players) {
-    if (inJailByPlayerId?.[player.player_id]) {
-      jailPlayers.push(player);
-    } else {
-      visitingPlayers.push(player);
-    }
-  }
-
-  return { jailPlayers, visitingPlayers };
-}
-
 function App() {
   const [message, setMessage] = useState("Loading...");
   const [nickname, setNickname] = useState("");
@@ -1267,6 +318,7 @@ function App() {
   const currentPlayer =
     currentRoom?.players.find((player) => player.player_id === playerId) ?? null;
   const hasStoredCollapsedDeskPreference = Object.keys(collapsedDeskSections).length > 0;
+  const hasStoredUiPreference = hasStoredCollapsedDeskPreference || hasStoredHelpPreference;
   const isEliminated = Boolean(currentRoom && isGameOpen && playerId && !currentPlayer);
   const isHost = currentPlayer?.is_host ?? false;
   const canStartGame =
@@ -1299,12 +351,16 @@ function App() {
   const lastEffects = currentRoom?.game?.last_effects ?? [];
   const lastLandedPlayer =
     currentRoom?.players.find((player) => player.player_id === lastLandedPlayerId) ?? null;
-  const lastLandedCell =
+  const lastLandedCell = 
     boardCells.find((cell) => cell.index === lastLandedPosition) ?? null;
   const lastLandedCellLevel = lastLandedCell ? propertyLevels[lastLandedCell.index] ?? 0 : 0;
   const lastLandedCellMortgaged = lastLandedCell
     ? Boolean(propertyMortgaged[lastLandedCell.index])
     : false;
+  const lastLandedRentHint =
+    lastLandedCell && !lastLandedCellMortgaged
+      ? getRentHint(lastLandedCell, lastLandedCellLevel)
+      : null;
   const lastLandedCellOwner = lastLandedCell
     ? getPlayerById(propertyOwners[lastLandedCell.index])
     : null;
@@ -1659,26 +715,15 @@ function App() {
       : null;
 
     return (
-      <div
+      <PlayerToken
         key={player.player_id}
-        className={`player-token ${
-          currentTurnPlayerId === player.player_id ? "is-active-turn" : ""
-        } ${movementEffect ? "is-moving" : ""}`}
-        style={{
-          "--player-token-color": tokenColor,
-          ...(movementOffset
-            ? {
-                "--token-move-from-x": `${movementOffset.x}px`,
-                "--token-move-from-y": `${movementOffset.y}px`,
-              }
-            : {}),
-          zIndex: Math.max(1, 8 - occupantIndex) + (movementEffect ? 20 : 0),
-        }}
-        title={player.nickname}
-        aria-label={`${player.nickname} token${movementEffect ? " just moved" : ""}`}
-      >
-        {getPlayerTokenLabel(player.nickname)}
-      </div>
+        player={player}
+        occupantIndex={occupantIndex}
+        tokenColor={tokenColor}
+        movementOffset={movementOffset}
+        isActiveTurn={currentTurnPlayerId === player.player_id}
+        isMoving={Boolean(movementEffect)}
+      />
     );
   }
 
@@ -2019,8 +1064,13 @@ function App() {
   function handleResetDeskLayout() {
     clearStoredCollapsedDeskSections();
     setCollapsedDeskSections({});
-    setStatus("Desk layout restored to default.");
-    queueActionGuideAnnouncement("Desk layout restored to default.");
+  }
+
+  function handleResetUiPreferences() {
+    handleResetDeskLayout();
+    handleRecentEventsHelpReset();
+    setStatus("UI preferences restored to default.");
+    queueActionGuideAnnouncement("UI preferences restored to default.");
   }
 
   const showTradeDesk = !pendingAuction && (pendingTrade || ownedBuyableCells.length > 0);
@@ -2243,348 +1293,50 @@ function App() {
     });
   }
 
-  function getPreRollActionSectionKey() {
-    if (!pendingAuction && (upgradeableProperties.length > 0 || sellableProperties.length > 0)) {
-      return "upgrade";
-    }
-
-    if (
-      !pendingAuction &&
-      (mortgageableCells.length > 0 || (unmortgageableCells.length > 0 && !canManageDebtRecovery))
-    ) {
-      return "mortgage";
-    }
-
-    if (
-      !pendingAuction &&
-      (pendingTrade || (canProposeTrade && tradeableCells.length > 0 && tradeTargets.length > 0))
-    ) {
-      return "trade";
-    }
-
-    return "actions";
-  }
-
-  function getPreRollActionFocusKey() {
-    if (!pendingAuction && upgradeableProperties.length > 0) {
-      return "upgrade-first";
-    }
-
-    if (!pendingAuction && sellableProperties.length > 0) {
-      return "sell-upgrade-first";
-    }
-
-    if (!pendingAuction && mortgageableCells.length > 0) {
-      return "mortgage-first";
-    }
-
-    if (!pendingAuction && unmortgageableCells.length > 0 && !canManageDebtRecovery) {
-      return "unmortgage-first";
-    }
-
-    if (!pendingAuction && canProposeTrade && tradeableCells.length > 0 && tradeTargets.length > 0) {
-      return "trade-offer-cell";
-    }
-
-    return "roll-dice";
-  }
-
-  function getDebtRecoveryActionSectionKey() {
-    if (!pendingAuction && mortgageableCells.length > 0) {
-      return "mortgage";
-    }
-
-    if (!pendingAuction && sellableProperties.length > 0) {
-      return "upgrade";
-    }
-
-    if (
-      !pendingAuction &&
-      (pendingTrade || (canProposeTrade && tradeableCells.length > 0 && tradeTargets.length > 0))
-    ) {
-      return "trade";
-    }
-
-    return "actions";
-  }
-
-  function getDebtRecoveryActionFocusKey() {
-    if (!pendingAuction && mortgageableCells.length > 0) {
-      return "mortgage-first";
-    }
-
-    if (!pendingAuction && sellableProperties.length > 0) {
-      return "sell-upgrade-first";
-    }
-
-    if (!pendingAuction && canProposeTrade && tradeableCells.length > 0 && tradeTargets.length > 0) {
-      return "trade-offer-cell";
-    }
-
-    return "declare-bankruptcy";
-  }
-
-  const actionGuide = (() => {
-    const activePlayerName = currentTurnPlayer?.nickname ?? "the active player";
-    const canPrepareTrade = canProposeTrade && tradeableCells.length > 0 && tradeTargets.length > 0;
-    const preRollOptions = [];
-    const debtRecoveryOptions = [];
-
-    if (canUpgradeProperties && upgradeableProperties.length > 0) {
-      preRollOptions.push(getCountLabel(upgradeableProperties.length, "upgrade option"));
-    }
-    if (canSellUpgrades && !canManageDebtRecovery && sellableProperties.length > 0) {
-      preRollOptions.push(getCountLabel(sellableProperties.length, "upgrade sale"));
-    }
-    if (canManageMortgages && !canManageDebtRecovery && mortgageableCells.length > 0) {
-      preRollOptions.push(getCountLabel(mortgageableCells.length, "mortgage option"));
-    }
-    if (canUnmortgageProperties && unmortgageableCells.length > 0) {
-      preRollOptions.push(getCountLabel(unmortgageableCells.length, "unmortgage option"));
-    }
-    if (canPrepareTrade) {
-      preRollOptions.push(getCountLabel(tradeableCells.length, "trade-ready cell"));
-    }
-
-    if (canSellUpgrades && sellableProperties.length > 0) {
-      debtRecoveryOptions.push(getCountLabel(sellableProperties.length, "upgrade sale"));
-    }
-    if (canManageMortgages && mortgageableCells.length > 0) {
-      debtRecoveryOptions.push(getCountLabel(mortgageableCells.length, "mortgage option"));
-    }
-    if (canPrepareTrade) {
-      debtRecoveryOptions.push(getCountLabel(tradeableCells.length, "trade-ready cell"));
-    }
-
-    if (canResolvePurchase && pendingPurchaseCell) {
-        return {
-          tone: "urgent",
-          eyebrow: "Decision needed",
-          title: "Buy or pass",
-          summary: `You landed on ${pendingPurchaseCell.name}. Buy it for $${pendingPurchase?.price ?? 0} or pass it to the auction flow.`,
-          steps: [
-            "Use Buy property if you want to keep this cell.",
-            "Use Pass on purchase if you want the table to move to auction.",
-        ],
-        focusKey: "buy-property",
-        targetKey: "actions",
-      };
-    }
-
-    if (pendingPurchaseCell) {
-      return {
-        tone: "waiting",
-        eyebrow: "Turn paused",
-        title: `Waiting for ${pendingPurchasePlayer?.nickname ?? activePlayerName}`,
-        summary: `${pendingPurchasePlayer?.nickname ?? activePlayerName} is deciding whether to buy ${pendingPurchaseCell.name}.`,
-        steps: [
-          "The turn continues after the purchase is resolved.",
-          "You can inspect the board, players, and recent events while you wait.",
-        ],
-        focusKey: null,
-        targetKey: "purchase",
-      };
-    }
-
-    if (pendingAuction) {
-      const auctionCellName = pendingAuctionCell?.name ?? pendingAuction.cell_name;
-
-      if (canBidInAuction) {
-        return {
-          tone: "urgent",
-          eyebrow: "Auction turn",
-          title: "Auction",
-          summary: canAffordAuctionBid
-            ? `${auctionCellName} is in auction. You can bid at least $${minimumAuctionBid}, or pass and leave the auction.`
-            : `${auctionCellName} is in auction. The minimum bid is $${minimumAuctionBid}, but you do not have enough cash to place it.`,
-          steps: canAffordAuctionBid
-            ? [
-                `Enter a bid of at least $${minimumAuctionBid} if you want to stay in the auction.`,
-                "Use Pass if you want to leave the auction now.",
-              ]
-            : ["Use Pass. It is the only valid move you can make right now."],
-          focusKey: canAffordAuctionBid ? "auction-bid-input" : "auction-pass",
-          targetKey: "auction",
-        };
-      }
-
-      return {
-        tone: "waiting",
-        eyebrow: "Auction in progress",
-        title: `Waiting for ${pendingAuctionActivePlayer?.nickname ?? activePlayerName}`,
-        summary: `${pendingAuctionActivePlayer?.nickname ?? activePlayerName} is deciding the next move for ${auctionCellName}.`,
-        steps: [
-          "The turn resumes after the auction finishes.",
-          "You can review the current bid and highest bidder in the auction card below.",
-        ],
-        focusKey: null,
-        targetKey: "auction",
-      };
-    }
-
-    if (pendingTrade) {
-      const tradeCellName = pendingTradeCell?.name ?? pendingTrade.cell_name;
-
-      if (canAcceptTrade) {
-        return {
-          tone: "urgent",
-          eyebrow: "Trade response",
-          title: `Answer the offer for ${tradeCellName}`,
-          summary: `${pendingTradeProposer?.nickname ?? "Another player"} wants to trade ${tradeCellName} for $${pendingTrade.cash_amount}.`,
-          steps: [
-            "Use Accept trade if the deal looks good to you.",
-            "Use Reject trade if you do not want this deal.",
-          ],
-          focusKey: "accept-trade",
-          targetKey: "trade",
-        };
-      }
-
-      if (pendingTrade.proposer_id === playerId && canRejectTrade) {
-        return {
-          tone: "active",
-          eyebrow: "Offer sent",
-          title: "Waiting for the trade answer",
-          summary: `${pendingTradeReceiver?.nickname ?? "The other player"} is deciding whether to accept your offer for ${tradeCellName}.`,
-          steps: [
-            "Wait for the response if you still want the deal.",
-            "Use Cancel offer if you want to stop waiting.",
-          ],
-          focusKey: "reject-trade",
-          targetKey: "trade",
-        };
-      }
-
-      return {
-        tone: "waiting",
-        eyebrow: "Trade in progress",
-        title: `Waiting for ${pendingTradeReceiver?.nickname ?? "the receiving player"}`,
-        summary: `${pendingTradeReceiver?.nickname ?? "The receiving player"} is reviewing the offer for ${tradeCellName}.`,
-        steps: [
-          "The turn continues after the trade is accepted, rejected, or cancelled.",
-          "You can still inspect the property and player cards while you wait.",
-        ],
-        focusKey: null,
-        targetKey: "trade",
-      };
-    }
-
-    if (pendingBankruptcy) {
-      if (canManageDebtRecovery) {
-        const creditorLabel = pendingBankruptcyCreditor?.nickname ?? pendingBankruptcyCreditorLabel;
-        const steps = [];
-
-        if (debtRecoveryOptions.length > 0) {
-          steps.push(`Recovery tools ready: ${debtRecoveryOptions.join(", ")}.`);
-          steps.push("Use the debt actions below to raise cash before you give up the turn.");
-        } else {
-          steps.push("No recovery tools are available from your current board state.");
-        }
-
-        steps.push("Use Declare bankruptcy only if you cannot cover the debt.");
-
-        return {
-          tone: "urgent",
-          eyebrow: "Debt recovery",
-          title: "Raise cash or go bankrupt",
-          summary: `You owe ${creditorLabel} $${pendingBankruptcy.amount_owed}. Clear the debt to keep playing.`,
-          steps,
-          focusKey: getDebtRecoveryActionFocusKey(),
-          targetKey: getDebtRecoveryActionSectionKey(),
-        };
-      }
-
-      return {
-        tone: "waiting",
-        eyebrow: "Debt recovery",
-        title: `Waiting for ${pendingBankruptcyPlayer?.nickname ?? activePlayerName}`,
-        summary: `${pendingBankruptcyPlayer?.nickname ?? activePlayerName} is trying to raise $${pendingBankruptcy.amount_owed} owed to ${pendingBankruptcyCreditorLabel}.`,
-        steps: [
-          "The match continues after the debt is covered or bankruptcy is declared.",
-          "You can inspect their properties and recent events while you wait.",
-        ],
-        focusKey: null,
-        targetKey: null,
-      };
-    }
-
-    if (currentTurnPlayerId === playerId) {
-      if (isCurrentPlayerInJail) {
-        const jailSteps = [];
-
-        if (canPayJailFine) {
-          jailSteps.push(
-            canAffordJailFine
-              ? `Optional: pay $${JAIL_FINE_AMOUNT} now if you want to leave jail before rolling.`
-              : `You cannot afford the $${JAIL_FINE_AMOUNT} fine right now, so your only way out is to roll.`,
-          );
-        }
-
-        jailSteps.push("Roll dice to try for doubles and leave jail.");
-
-        return {
-          tone: "active",
-          eyebrow: "Your turn",
-          title: "Handle your jail turn",
-          summary:
-            currentPlayerTurnsInJail >= 2
-              ? "This is your last free attempt. If you miss doubles, the fine is forced and you move."
-              : "You can try to roll doubles for free, or pay before you roll if you have enough cash.",
-          steps: jailSteps,
-          focusKey: "roll-dice",
-          targetKey: "actions",
-        };
-      }
-
-      if (canUsePreRollDesk) {
-        return {
-          tone: "active",
-          eyebrow: "Your turn",
-          title: preRollOptions.length > 0 ? "Prepare, then roll" : "Roll to continue",
-          summary:
-            preRollOptions.length > 0
-              ? "You still have optional pre-roll actions available before you commit to the dice."
-              : "No extra setup is available right now. Your next move is simply to roll the dice.",
-          steps:
-            preRollOptions.length > 0
-              ? [
-                  `Optional tools ready: ${preRollOptions.join(", ")}.`,
-                  "Use Roll dice when you are ready to continue the turn.",
-                ]
-              : ["Use Roll dice to continue the turn."],
-          note:
-            currentPlayerDoublesStreak > 0
-              ? `Careful: your doubles streak is ${currentPlayerDoublesStreak}/3, so one more doubles result sends you to jail.`
-              : null,
-          focusKey: getPreRollActionFocusKey(),
-          targetKey: getPreRollActionSectionKey(),
-        };
-      }
-
-      return {
-        tone: "active",
-        eyebrow: "Your turn",
-        title: "Turn state updated",
-        summary: "Your turn is between actions right now. Follow the visible prompt or action card below.",
-        steps: ["Check the active purchase, auction, trade, or debt section if one is open."],
-        focusKey: "roll-dice",
-        targetKey: "actions",
-      };
-    }
-
-    return {
-      tone: "waiting",
-      eyebrow: "Waiting",
-      title: `Waiting for ${activePlayerName}`,
-      summary: `${activePlayerName} is taking the current turn.`,
-      steps: [
-        "You can inspect cells, players, and recent events while you wait.",
-        "Watch the center cards for the next prompt that opens to you.",
-      ],
-      focusKey: null,
-      targetKey: null,
-    };
-  })();
+  const actionGuide = buildActionGuide({
+    currentTurnPlayer,
+    canProposeTrade,
+    tradeableCells,
+    tradeTargets,
+    canUpgradeProperties,
+    upgradeableProperties,
+    canSellUpgrades,
+    canManageDebtRecovery,
+    sellableProperties,
+    canManageMortgages,
+    mortgageableCells,
+    canUnmortgageProperties,
+    unmortgageableCells,
+    canResolvePurchase,
+    pendingPurchaseCell,
+    pendingPurchase,
+    pendingPurchasePlayer,
+    pendingAuction,
+    pendingAuctionCell,
+    canBidInAuction,
+    canAffordAuctionBid,
+    minimumAuctionBid,
+    pendingAuctionActivePlayer,
+    pendingTrade,
+    pendingTradeCell,
+    canAcceptTrade,
+    pendingTradeProposer,
+    playerId,
+    canRejectTrade,
+    pendingTradeReceiver,
+    pendingBankruptcy,
+    pendingBankruptcyCreditor,
+    pendingBankruptcyCreditorLabel,
+    pendingBankruptcyPlayer,
+    currentTurnPlayerId,
+    isCurrentPlayerInJail,
+    canPayJailFine,
+    canAffordJailFine,
+    jailFineAmount: JAIL_FINE_AMOUNT,
+    currentPlayerTurnsInJail,
+    canUsePreRollDesk,
+    currentPlayerDoublesStreak,
+  });
 
   useEffect(() => {
     const nextTradeTargets =
@@ -3922,1566 +2674,478 @@ function App() {
           aria-live="polite"
           aria-atomic="true"
         />
-        <p className="eyebrow">Day 1 - React + FastAPI</p>
-        <h1>Monopoly Online</h1>
-        <p className="lead">
-          Our first playable screen will let a player create or join a room.
-        </p>
-
-        {!currentRoom && (
-          <>
-            <div className="form-grid">
-              <label className="field">
-                <span>Nickname</span>
-                <input
-                  type="text"
-                  placeholder="Enter your nickname"
-                  value={nickname}
-                  onChange={(event) => setNickname(event.target.value)}
-                />
-              </label>
-
-              <label className="field">
-                <span>Room code</span>
-                <input
-                  type="text"
-                  placeholder="Example: ABC123"
-                  value={roomCode}
-                  maxLength={6}
-                  onChange={(event) => setRoomCode(event.target.value.toUpperCase())}
-                />
-              </label>
-            </div>
-
-            <div className="actions">
-              <button type="button" onClick={handleCreateRoom} disabled={isSubmitting}>
-                Create room
-              </button>
-              <button
-                type="button"
-                className="secondary"
-                onClick={handleJoinRoom}
-                disabled={isSubmitting}
-              >
-                Join room
-              </button>
-            </div>
-          </>
-        )}
-
-        <section className="status-card">
-          <h2>Status</h2>
-          <p>{status}</p>
-        </section>
-
-        <section className="status-row">
-          <span>Backend</span>
-          <strong>{message}</strong>
-        </section>
+        <LandingPanel
+          showEntryForm={!currentRoom}
+          nickname={nickname}
+          roomCode={roomCode}
+          status={status}
+          message={message}
+          isSubmitting={isSubmitting}
+          onNicknameChange={setNickname}
+          onRoomCodeChange={setRoomCode}
+          onCreateRoom={handleCreateRoom}
+          onJoinRoom={handleJoinRoom}
+        />
 
         {currentRoom && isLobbyOpen && (
-          <section className="room-card">
-            <div className="room-card-header">
-              <div>
-                <h2>Lobby</h2>
-                <p>
-                  Room code: <strong>{currentRoom.room_code}</strong>
-                </p>
-                <p>
-                  Room status: <strong>{currentRoom.status}</strong>
-                </p>
-              </div>
-              <p className="player-id">Your player id: {playerId}</p>
-            </div>
-
-            <div className="room-actions">
-              <button
-                type="button"
-                className={`ready-button ${currentPlayer?.is_ready ? "is-ready" : ""}`}
-                onClick={handleToggleReady}
-                disabled={isSubmitting || !isLobbyOpen}
-              >
-                {currentPlayer?.is_ready ? "Set unready" : "Set ready"}
-              </button>
-              {isHost && isLobbyOpen && (
-                <button
-                  type="button"
-                  className="start-button"
-                  onClick={handleStartGame}
-                  disabled={isSubmitting || !canStartGame}
-                >
-                  Start game
-                </button>
-              )}
-              <button
-                type="button"
-                className="leave-button"
-                onClick={handleLeaveRoom}
-                disabled={isSubmitting}
-              >
-                Leave room
-              </button>
-            </div>
-
-            <section className="lobby-note">
-              <p>
-                Players: {currentRoom.players.length}/{currentRoom.max_players}
-              </p>
-              <p>
-                Start rule: at least {currentRoom.min_players_to_start} players and
-                everyone must be ready.
-              </p>
-              {!isHost && currentRoom.status === "lobby" && (
-                <p>Only the host can start the game.</p>
-              )}
-            </section>
-
-            <ul className="player-list">
-              {currentRoom.players.map((player) => (
-                <li
-                  key={player.player_id}
-                  className={`player-item ${player.player_id === playerId ? "is-you" : ""}`}
-                >
-                  <span>{player.nickname}</span>
-                  <span>
-                    {player.is_host ? "Host" : "Player"} -{" "}
-                    {player.is_ready ? "Ready" : "Not ready"}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          </section>
+          <LobbyView
+            roomCode={currentRoom.room_code}
+            roomStatus={currentRoom.status}
+            playerId={playerId}
+            currentPlayer={currentPlayer}
+            isHost={isHost}
+            canStartGame={canStartGame}
+            isLobbyOpen={isLobbyOpen}
+            isSubmitting={isSubmitting}
+            players={currentRoom.players}
+            maxPlayers={currentRoom.max_players}
+            minPlayersToStart={currentRoom.min_players_to_start}
+            onToggleReady={handleToggleReady}
+            onStartGame={handleStartGame}
+            onLeaveRoom={handleLeaveRoom}
+          />
         )}
 
         {currentRoom && isFinished && (
-          <section className="game-card">
-            <div className="room-card-header">
-              <div>
-                <h2>Game over</h2>
-                <p>
-                  Room code: <strong>{currentRoom.room_code}</strong>
-                </p>
-              </div>
-              <p className="player-id">Your player id: {playerId}</p>
-            </div>
-
-            <section className="game-summary">
-              <p>
-                Winner:{" "}
-                <strong>
-                  {winnerPlayer?.nickname ?? "Unknown player"}
-                  {winnerPlayer?.player_id === playerId ? " (you)" : ""}
-                </strong>
-              </p>
-              {!currentPlayer && (
-                <p>You were eliminated before the end of the match.</p>
-              )}
-            </section>
-
-            {lastBankruptcySummary && (
-              <BankruptcySummaryCard summary={lastBankruptcySummary} title="Latest bankruptcy recap" />
-            )}
-
-            <RecentEventsCard
-              events={recentEvents}
-              title="Recent events"
-              maxGroups={4}
-              selectedKind={getRecentEventsSelectedKind("finished")}
-              expandedGroups={getRecentEventsExpandedState("finished")}
-              freshEventIds={freshRecentEventIds}
-              onSelectKind={(kind) => handleRecentEventsKindChange("finished", kind)}
-              onToggleGroup={(groupKey) => handleRecentEventsGroupToggle("finished", groupKey)}
-            />
-
-            <div className="room-actions">
-              <button
-                type="button"
-                className="leave-button"
-                onClick={handleLeaveRoom}
-                disabled={isSubmitting}
-              >
-                Leave room
-              </button>
-            </div>
-          </section>
+          <FinishedGameView
+            roomCode={currentRoom.room_code}
+            playerId={playerId}
+            winnerPlayer={winnerPlayer}
+            currentPlayer={currentPlayer}
+            lastBankruptcySummary={lastBankruptcySummary}
+            recentEvents={recentEvents}
+            selectedKind={getRecentEventsSelectedKind("finished")}
+            expandedGroups={getRecentEventsExpandedState("finished")}
+            freshEventIds={freshRecentEventIds}
+            onSelectKind={(kind) => handleRecentEventsKindChange("finished", kind)}
+            onToggleGroup={(groupKey) => handleRecentEventsGroupToggle("finished", groupKey)}
+            isSubmitting={isSubmitting}
+            onLeaveRoom={handleLeaveRoom}
+          />
         )}
 
         {currentRoom && isEliminated && (
-          <section className="game-card">
-            <div className="room-card-header">
-              <div>
-                <h2>Eliminated</h2>
-                <p>
-                  Room code: <strong>{currentRoom.room_code}</strong>
-                </p>
-              </div>
-              <p className="player-id">Your player id: {playerId}</p>
-            </div>
-
-            <section className="game-summary">
-              <p>You went bankrupt and can no longer take turns in this match.</p>
-              <p>
-                Current turn: <strong>{currentTurnPlayer?.nickname ?? "Unknown player"}</strong>
-              </p>
-              {lastEffects.length > 0 && (
-                <div className="effect-list">
-                  {lastEffects.map((effect, i) => (
-                    <p key={i}>{effect}</p>
-                  ))}
-                </div>
-              )}
-            </section>
-
-            {lastBankruptcySummary && (
-              <BankruptcySummaryCard
-                summary={lastBankruptcySummary}
-                title={
-                  lastBankruptcySummary.debtor_player_id === playerId
-                    ? "Your bankruptcy recap"
-                    : "Latest bankruptcy recap"
-                }
-              />
-            )}
-
-            <RecentEventsCard
-              events={priorRecentEvents}
-              title="Recent events before your elimination"
-              maxGroups={4}
-              selectedKind={getRecentEventsSelectedKind("eliminated")}
-              expandedGroups={getRecentEventsExpandedState("eliminated")}
-              freshEventIds={freshRecentEventIds}
-              onSelectKind={(kind) => handleRecentEventsKindChange("eliminated", kind)}
-              onToggleGroup={(groupKey) => handleRecentEventsGroupToggle("eliminated", groupKey)}
-            />
-
-            <div className="room-actions">
-              <button
-                type="button"
-                className="leave-button"
-                onClick={handleLeaveRoom}
-                disabled={isSubmitting}
-              >
-                Exit match view
-              </button>
-            </div>
-          </section>
+          <EliminatedGameView
+            roomCode={currentRoom.room_code}
+            playerId={playerId}
+            currentTurnPlayerName={currentTurnPlayer?.nickname ?? "Unknown player"}
+            lastEffects={lastEffects}
+            lastBankruptcySummary={lastBankruptcySummary}
+            bankruptcyRecapTitle={
+              lastBankruptcySummary?.debtor_player_id === playerId
+                ? "Your bankruptcy recap"
+                : "Latest bankruptcy recap"
+            }
+            recentEvents={priorRecentEvents}
+            selectedKind={getRecentEventsSelectedKind("eliminated")}
+            expandedGroups={getRecentEventsExpandedState("eliminated")}
+            freshEventIds={freshRecentEventIds}
+            onSelectKind={(kind) => handleRecentEventsKindChange("eliminated", kind)}
+            onToggleGroup={(groupKey) => handleRecentEventsGroupToggle("eliminated", groupKey)}
+            isSubmitting={isSubmitting}
+            onLeaveRoom={handleLeaveRoom}
+          />
         )}
 
         {currentRoom && isGameOpen && currentPlayer && (
-          <section className="game-card">
-            <div className="room-card-header">
-              <div>
-                <h2>Game</h2>
-                <p>
-                  Room code: <strong>{currentRoom.room_code}</strong>
-                </p>
-                <p>
-                  Turn: <strong>{currentRoom.game?.turn.turn_number}</strong>
-                </p>
-              </div>
-              <p className="player-id">Your player id: {playerId}</p>
-            </div>
+          <GameView
+            roomCode={currentRoom.room_code}
+            turnNumber={currentRoom.game?.turn.turn_number}
+            playerId={playerId}
+            boardCenterSummaryProps={{
+              currentTurnPlayerName: currentTurnPlayer?.nickname ?? "Unknown player",
+              lastRollText: currentRoom.game?.turn.last_roll
+                ? currentRoom.game.turn.last_roll.join(" + ")
+                : "No roll yet",
+              landedSummary: lastLandedCell
+                ? `${lastLandedPlayer?.nickname ?? "Player"} landed on ${lastLandedCell.name}`
+                : "No landing yet",
+              lastLandedCell,
+              lastLandedCellTypeLabel: lastLandedCell
+                ? formatCellType(lastLandedCell.cell_type)
+                : "",
+              lastLandedRentHint,
+              lastLandedLevel: lastLandedCellLevel,
+              maxPropertyLevel: MAX_PROPERTY_LEVEL,
+              lastLandedAmountLabel:
+                lastLandedCell &&
+                !lastLandedCell.price &&
+                typeof lastLandedCell.amount === "number"
+                  ? lastLandedCell.cell_type === "tax"
+                    ? `-$${lastLandedCell.amount}`
+                    : `+$${lastLandedCell.amount}`
+                  : null,
+              lastLandedOwnerName: lastLandedCellOwner?.nickname ?? null,
+              isLastLandedMortgaged: lastLandedCellMortgaged,
+              lastEffects,
+            }}
+            actionGuideCardProps={{
+              actionGuide,
+              hasStoredUiPreference,
+              jumpButtonLabel: actionGuide.targetKey
+                ? buildActionGuideJumpButtonLabel(actionGuide.targetKey)
+                : "",
+              onJump: () => scrollToActionSection(actionGuide.targetKey, actionGuide.focusKey),
+              onResetUiPreferences: handleResetUiPreferences,
+            }}
+            selectedCellInspectorProps={
+              inspectedCell
+                ? {
+                    cell: inspectedCell,
+                    ownerPlayer: inspectedCellOwner,
+                    ownerColor: inspectedCellOwner
+                      ? getPlayerColor(inspectedCellOwner.player_id)
+                      : null,
+                    cellTypeLabel: formatCellType(inspectedCell.cell_type),
+                    rentHint: inspectedCellRentHint,
+                    isMortgaged: inspectedCellMortgaged,
+                    mortgageValue: getMortgageValue(inspectedCell) ?? 0,
+                    propertyLevel: inspectedCellLevel,
+                    maxPropertyLevel: MAX_PROPERTY_LEVEL,
+                    upgradeCost: getUpgradeCost(inspectedCell) ?? 0,
+                    occupants: inspectedCellOccupants,
+                    linkedEventCount: inspectedCellLinkedEventCount,
+                    jailGroups: inspectedCellJailGroups,
+                    quickActionMessage: inspectedCellQuickActionMessage,
+                    isSubmitting,
+                    canBuy: inspectedCellCanBuy,
+                    canSkipPurchase: inspectedCellCanSkipPurchase,
+                    canUpgrade: inspectedCellCanUpgrade,
+                    canSellUpgrade: inspectedCellCanSellUpgrade,
+                    canMortgage: inspectedCellCanMortgage,
+                    canUnmortgage: inspectedCellCanUnmortgage,
+                    canUseTradeDesk: inspectedCellCanUseTradeDesk,
+                    isSelectedInTradeDesk: inspectedCellIsSelectedInTradeDesk,
+                    onClear: clearRecentEventFocus,
+                    onBuyProperty: handleBuyProperty,
+                    onSkipPurchase: handleSkipPurchase,
+                    onUpgrade: () => handleUpgradeProperty(inspectedCell.index),
+                    onSellUpgrade: () => handleSellUpgradeProperty(inspectedCell.index),
+                    onMortgage: () => handleMortgageProperty(inspectedCell.index),
+                    onUnmortgage: () => handleUnmortgageProperty(inspectedCell.index),
+                    onSelectForTrade: () => {
+                      setSelectedTradePosition(String(inspectedCell.index));
+                      setStatus(
+                        inspectedCellIsSelectedInTradeDesk
+                          ? `${inspectedCell.name} is already selected in the trade desk.`
+                          : `Prepared ${inspectedCell.name} in the trade desk below.`,
+                      );
+                    },
+                  }
+                : null
+            }
 
-            <section className="monopoly-board-shell">
-              <div className="monopoly-board">
-                <section className="board-center">
-                  <section className="game-summary board-center-section">
-                    <p>
-                      Current turn: <strong>{currentTurnPlayer?.nickname ?? "Unknown player"}</strong>
-                    </p>
-                    <p>
-                      Last roll:{" "}
-                      <strong>
-                        {currentRoom.game?.turn.last_roll
-                          ? currentRoom.game.turn.last_roll.join(" + ")
-                          : "No roll yet"}
-                      </strong>
-                    </p>
-                    <p>
-                      Landed cell:{" "}
-                      <strong>
-                        {lastLandedCell
-                          ? `${lastLandedPlayer?.nickname ?? "Player"} landed on ${lastLandedCell.name}`
-                          : "No landing yet"}
-                      </strong>
-                    </p>
-                    {lastLandedCell && (
-                      <p>
-                        Cell type: <strong>{formatCellType(lastLandedCell.cell_type)}</strong> -{" "}
-                        {lastLandedCell.description}
-                      </p>
-                    )}
-                    {lastLandedCell?.price && (
-                      <p>
-                        Price: <strong>${lastLandedCell.price}</strong>
-                        {!lastLandedCellMortgaged && getRentHint(lastLandedCell, lastLandedCellLevel) && (
-                          <> &middot; {getRentHint(lastLandedCell, lastLandedCellLevel)}</>
-                        )}
-                      </p>
-                    )}
-                    {lastLandedCellMortgaged && (
-                      <p>
-                        Mortgage: <strong>Active</strong> &middot; No rent while mortgaged
-                      </p>
-                    )}
-                    {lastLandedCell?.cell_type === "property" && (
-                      <p>
-                        Upgrade level: <strong>{lastLandedCellLevel}/{MAX_PROPERTY_LEVEL}</strong>
-                      </p>
-                    )}
-                    {lastLandedCell && !lastLandedCell.price && typeof lastLandedCell.amount === "number" && (
-                      <p>
-                        Amount:{" "}
-                        <strong>
-                          {lastLandedCell.cell_type === "tax"
-                            ? `-$${lastLandedCell.amount}`
-                            : `+$${lastLandedCell.amount}`}
-                        </strong>
-                      </p>
-                    )}
-                    {lastLandedCellOwner && (
-                      <p>
-                        Owner: <strong>{lastLandedCellOwner.nickname}</strong>
-                      </p>
-                    )}
-                    {lastEffects.length > 0 && (
-                      <div className="effect-list">
-                        {lastEffects.map((effect, i) => (
-                          <p key={i}>{effect}</p>
-                        ))}
-                      </div>
-                    )}
-                  </section>
+            selectedPlayerInspectorProps={
+              inspectedPlayer
+                ? {
+                    player: inspectedPlayer,
+                    currentPlayerId: playerId,
+                    playerColor: inspectedPlayerColor,
+                    isCurrentTurn: inspectedPlayerIsCurrentTurn,
+                    cash: inspectedPlayerCash,
+                    position: inspectedPlayerPosition,
+                    cell: inspectedPlayerCell,
+                    isPendingBankruptcy:
+                      pendingBankruptcy?.player_id === inspectedPlayer.player_id,
+                    isInJail: inspectedPlayerInJail,
+                    turnsInJail: inspectedPlayerTurnsInJail,
+                    ownedCells: inspectedPlayerOwnedCells,
+                    ownedCellsPreview: inspectedPlayerOwnedCellsPreview,
+                    mortgagedCellCount: inspectedPlayerMortgagedCellCount,
+                    linkedEventCount: inspectedPlayerLinkedEventCount,
+                    canBeTradeTarget: inspectedPlayerCanBeTradeTarget,
+                    isSelectedTradeTarget: inspectedPlayerIsSelectedTradeTarget,
+                    isSubmitting,
+                    onClear: clearRecentEventFocus,
+                    onSelectTradeTarget: () => {
+                      setSelectedTradeTargetId(inspectedPlayer.player_id);
+                      setStatus(
+                        inspectedPlayerIsSelectedTradeTarget
+                          ? `${inspectedPlayer.nickname} is already selected in the trade form.`
+                          : `Prepared ${inspectedPlayer.nickname} in the trade form below.`,
+                      );
+                    },
+                    tradeMessage: inspectedPlayerTradeMessage,
+                    debtMessage: inspectedPlayerDebtMessage,
+                  }
+                : null
+            }
+            bankruptcySummaryProps={
+              lastBankruptcySummary
+                ? {
+                    summary: lastBankruptcySummary,
+                    title: "Latest bankruptcy recap",
+                  }
+                : null
+            }
+            boardCenterActionsProps={{
+              sectionRef: (element) => setActionSectionRef("actions", element),
+              className: `room-actions board-center-actions board-center-focus-target ${
+                actionGuide.targetKey === "actions" ? "is-guide-target" : ""
+              } ${getActionGuideFlashClassName("actions")}`,
+              style: getActionGuideFlashStyle("actions"),
+              pendingPurchaseCell,
+              pendingPurchasePlayer,
+              pendingPurchase,
+              canResolvePurchase,
+              pendingAuction,
+              pendingAuctionCell,
+              pendingAuctionActivePlayer,
+              canBidInAuction,
+              minimumAuctionBid,
+              pendingTrade,
+              pendingTradeCell,
+              pendingTradeReceiver,
+              canAcceptTrade,
+              canRejectTrade,
+              playerId,
+              pendingBankruptcy,
+              pendingBankruptcyPlayer,
+              pendingBankruptcyCreditorLabel,
+              canManageDebtRecovery,
+              isCurrentPlayerInJail,
+              currentPlayerTurnsInJail,
+              jailFineAmount: JAIL_FINE_AMOUNT,
+              canPayJailFine,
+              canAffordJailFine,
+              canDeclareBankruptcy,
+              currentPlayerDoublesStreak,
+              isSubmitting,
+              canRollDice,
+              onPayJailFine: handlePayJailFine,
+              onDeclareBankruptcy: handleDeclareBankruptcy,
+              onRollDice: handleRollDice,
+              onBuyProperty: handleBuyProperty,
+              onSkipPurchase: handleSkipPurchase,
+              onLeaveRoom: handleLeaveRoom,
+            }}
 
-                  <section className={`action-guide-card board-center-section is-${actionGuide.tone}`}>
-                    <p className="action-guide-eyebrow">{actionGuide.eyebrow}</p>
-                    <h3>{actionGuide.title}</h3>
-                    <p className="action-guide-summary">{actionGuide.summary}</p>
-                    {(actionGuide.targetKey || hasStoredCollapsedDeskPreference) && (
-                      <div className="action-guide-actions">
-                        {actionGuide.targetKey && (
-                          <button
-                            type="button"
-                            className="action-guide-jump"
-                            onClick={() =>
-                              scrollToActionSection(actionGuide.targetKey, actionGuide.focusKey)
-                            }
-                          >
-                            {buildActionGuideJumpButtonLabel(actionGuide.targetKey)}
-                          </button>
-                        )}
-                        {hasStoredCollapsedDeskPreference && (
-                          <button
-                            type="button"
-                            className="action-guide-reset"
-                            onClick={handleResetDeskLayout}
-                          >
-                            Reset desk layout
-                          </button>
-                        )}
-                      </div>
-                    )}
-                    <ul className="action-guide-list">
-                      {actionGuide.steps.map((step) => (
-                        <li key={step}>{step}</li>
-                      ))}
-                    </ul>
-                    {actionGuide.note && <p className="action-guide-note">{actionGuide.note}</p>}
-                  </section>
+            pendingPurchaseCardProps={
+              pendingPurchaseCell
+                ? {
+                    sectionRef: (element) => setActionSectionRef("purchase", element),
+                    className: `purchase-card board-center-section board-center-focus-target ${
+                      actionGuide.targetKey === "purchase" ? "is-guide-target" : ""
+                    } ${getActionGuideFlashClassName("purchase")}`,
+                    style: getActionGuideFlashStyle("purchase"),
+                    playerName: pendingPurchasePlayer?.nickname ?? "A player",
+                    cellName: pendingPurchaseCell.name,
+                    price: pendingPurchase?.price,
+                    cellTypeLabel: formatCellType(pendingPurchaseCell.cell_type),
+                  }
+                : null
+            }
+            auctionCardProps={
+              pendingAuction
+                ? {
+                    sectionRef: (element) => setActionSectionRef("auction", element),
+                    className: `trade-card board-center-section board-center-focus-target ${
+                      actionGuide.targetKey === "auction" ? "is-guide-target" : ""
+                    } ${getActionGuideFlashClassName("auction")}`,
+                    style: getActionGuideFlashStyle("auction"),
+                    cellName: pendingAuctionCell?.name ?? pendingAuction.cell_name,
+                    initiatorName: pendingAuctionInitiator?.nickname ?? "the active player",
+                    cellTypeLabel: formatCellType(
+                      pendingAuctionCell?.cell_type ?? pendingAuction.cell_type,
+                    ),
+                    printedPrice: pendingAuction.price,
+                    currentBid: pendingAuction.current_bid,
+                    highestBidderName:
+                      pendingAuctionHighestBidder?.nickname ?? "No bids yet",
+                    activePlayerName: pendingAuctionActivePlayer?.nickname ?? "Waiting",
+                    passedPlayerNames: pendingAuctionPassedPlayers.map(
+                      (player) => player.nickname,
+                    ),
+                    canBid: canBidInAuction,
+                    bidAmount: auctionBidAmount,
+                    minimumBid: minimumAuctionBid,
+                    currentPlayerCash,
+                    canAffordBid: canAffordAuctionBid,
+                    canPass: canPassAuction,
+                    isSubmitting,
+                    onBidAmountChange: setAuctionBidAmount,
+                    onPlaceBid: handleBidInAuction,
+                    onPass: handlePassAuction,
+                  }
+                : null
+            }
+            tradeDeskCardProps={
+              showTradeDesk
+                ? {
+                    sectionRef: (element) => setActionSectionRef("trade", element),
+                    className: `trade-card board-center-section board-center-focus-target ${
+                      actionGuide.targetKey === "trade" ? "is-guide-target" : ""
+                    } ${getActionGuideFlashClassName("trade")}`,
+                    style: getActionGuideFlashStyle("trade"),
+                    statusLabel: tradeDeskState.statusLabel,
+                    statusTone: tradeDeskState.statusTone,
+                    note: tradeDeskState.note,
+                    isCollapsible: isDeskCollapsible(tradeDeskState.statusTone),
+                    isCollapsed: tradeDeskCollapsed,
+                    onToggleCollapse: () => toggleDeskCollapsed("trade"),
+                    pendingTrade,
+                    pendingTradeProposerName: pendingTradeProposer?.nickname ?? "A player",
+                    pendingTradeCellName:
+                      pendingTradeCell?.name ?? pendingTrade?.cell_name ?? "",
+                    pendingTradeReceiverName:
+                      pendingTradeReceiver?.nickname ?? "the receiving player",
+                    pendingTradeCashAmount: pendingTrade?.cash_amount ?? 0,
+                    pendingTradeCellTypeLabel: pendingTrade
+                      ? formatCellType(pendingTradeCell?.cell_type ?? pendingTrade.cell_type)
+                      : "",
+                    canAcceptTrade,
+                    canRejectTrade,
+                    rejectTradeLabel:
+                      pendingTrade?.proposer_id === playerId ? "Cancel offer" : "Reject trade",
+                    isSubmitting,
+                    onAcceptTrade: () => handleRespondTrade(true),
+                    onRejectTrade: () => handleRespondTrade(false),
+                    canShowTradeForm,
+                    canManageDebtRecovery,
+                    tradeableCells,
+                    selectedTradePosition,
+                    onSelectedTradePositionChange: setSelectedTradePosition,
+                    tradeTargets,
+                    selectedTradeTargetId,
+                    onSelectedTradeTargetIdChange: setSelectedTradeTargetId,
+                    tradeCashAmount,
+                    onTradeCashAmountChange: setTradeCashAmount,
+                    canProposeTrade,
+                    onProposeTrade: handleProposeTrade,
+                  }
+                : null
+            }
 
-                  {inspectedCell && (
-                    <section
-                      className="game-summary cell-inspector board-center-section"
-                      style={
-                        inspectedCellOwner
-                          ? { "--cell-owner-color": getPlayerColor(inspectedCellOwner.player_id) }
-                          : undefined
-                      }
-                    >
-                      <div className="cell-inspector-header">
-                        <div>
-                          <h3>Selected cell</h3>
-                          <p className="cell-inspector-title">
-                            <strong>{inspectedCell.name}</strong> &middot; Cell {inspectedCell.index}
-                          </p>
-                        </div>
-                        <button
-                          type="button"
-                          className="recent-events-clear-focus"
-                          onClick={clearRecentEventFocus}
-                        >
-                          Clear
-                        </button>
-                      </div>
-                      <p className="cell-inspector-description">
-                        <strong>{formatCellType(inspectedCell.cell_type)}</strong> &middot;{" "}
-                        {inspectedCell.description}
-                      </p>
-                      <div className="cell-inspector-meta">
-                        {inspectedCell.price && (
-                          <article className="cell-inspector-stat">
-                            <span>Price</span>
-                            <strong>${inspectedCell.price}</strong>
-                          </article>
-                        )}
-                        {inspectedCellRentHint && (
-                          <article className="cell-inspector-stat">
-                            <span>Rent</span>
-                            <strong>{inspectedCellRentHint.replace("Rent: ", "")}</strong>
-                          </article>
-                        )}
-                        {inspectedCell.price && (
-                          <article className="cell-inspector-stat">
-                            <span>Owner</span>
-                            <strong>{inspectedCellOwner?.nickname ?? "Unowned"}</strong>
-                          </article>
-                        )}
-                        {inspectedCell.price && (
-                          <article className="cell-inspector-stat">
-                            <span>Mortgage</span>
-                            <strong>
-                              {inspectedCellMortgaged
-                                ? "Active"
-                                : `$${getMortgageValue(inspectedCell) ?? 0}`}
-                            </strong>
-                          </article>
-                        )}
-                        {inspectedCell.cell_type === "property" && (
-                          <article className="cell-inspector-stat">
-                            <span>Level</span>
-                            <strong>
-                              {inspectedCellLevel}/{MAX_PROPERTY_LEVEL}
-                            </strong>
-                          </article>
-                        )}
-                        {inspectedCell.cell_type === "property" && (
-                          <article className="cell-inspector-stat">
-                            <span>Upgrade</span>
-                            <strong>${getUpgradeCost(inspectedCell) ?? 0}</strong>
-                          </article>
-                        )}
-                        {!inspectedCell.price && typeof inspectedCell.amount === "number" && (
-                          <article className="cell-inspector-stat">
-                            <span>Amount</span>
-                            <strong>
-                              {inspectedCell.cell_type === "tax"
-                                ? `-$${inspectedCell.amount}`
-                                : `+$${inspectedCell.amount}`}
-                            </strong>
-                          </article>
-                        )}
-                        <article className="cell-inspector-stat">
-                          <span>Occupants</span>
-                          <strong>{inspectedCellOccupants.length}</strong>
-                        </article>
-                        {inspectedCellLinkedEventCount > 0 && (
-                          <article className="cell-inspector-stat">
-                            <span>Recent events</span>
-                            <strong>{inspectedCellLinkedEventCount}</strong>
-                          </article>
-                        )}
-                      </div>
-                      {inspectedCellHasQuickActions && (
-                        <div className="cell-inspector-actions">
-                          {inspectedCellCanBuy && (
-                            <button
-                              type="button"
-                              className="buy-button"
-                              onClick={handleBuyProperty}
-                              disabled={isSubmitting}
-                            >
-                              Buy property
-                            </button>
-                          )}
-                          {inspectedCellCanSkipPurchase && (
-                            <button
-                              type="button"
-                              className="pass-button"
-                              onClick={handleSkipPurchase}
-                              disabled={isSubmitting}
-                            >
-                              Pass on purchase
-                            </button>
-                          )}
-                          {inspectedCellCanUpgrade && (
-                            <button
-                              type="button"
-                              className="upgrade-button"
-                              onClick={() => handleUpgradeProperty(inspectedCell.index)}
-                              disabled={isSubmitting}
-                            >
-                              Upgrade
-                            </button>
-                          )}
-                          {inspectedCellCanSellUpgrade && (
-                            <button
-                              type="button"
-                              className="sell-button"
-                              onClick={() => handleSellUpgradeProperty(inspectedCell.index)}
-                              disabled={isSubmitting}
-                            >
-                              Sell upgrade
-                            </button>
-                          )}
-                          {inspectedCellCanMortgage && (
-                            <button
-                              type="button"
-                              className="mortgage-button"
-                              onClick={() => handleMortgageProperty(inspectedCell.index)}
-                              disabled={isSubmitting}
-                            >
-                              Mortgage
-                            </button>
-                          )}
-                          {inspectedCellCanUnmortgage && (
-                            <button
-                              type="button"
-                              className="unmortgage-button"
-                              onClick={() => handleUnmortgageProperty(inspectedCell.index)}
-                              disabled={isSubmitting}
-                            >
-                              Unmortgage
-                            </button>
-                          )}
-                          {inspectedCellCanUseTradeDesk && (
-                            <button
-                              type="button"
-                              className="trade-button accept-button"
-                              onClick={() => {
-                                setSelectedTradePosition(String(inspectedCell.index));
-                                setStatus(
-                                  inspectedCellIsSelectedInTradeDesk
-                                    ? `${inspectedCell.name} is already selected in the trade desk.`
-                                    : `Prepared ${inspectedCell.name} in the trade desk below.`,
-                                );
-                              }}
-                              disabled={isSubmitting}
-                            >
-                              {inspectedCellIsSelectedInTradeDesk
-                                ? "Selected for trade"
-                                : "Select for trade"}
-                            </button>
-                          )}
-                        </div>
-                      )}
-                      {inspectedCellQuickActionMessage && (
-                        <p className="cell-inspector-helper">{inspectedCellQuickActionMessage}</p>
-                      )}
-                      {inspectedCellOccupants.length > 0 && (
-                        <p className="cell-inspector-note">
-                          Occupants:{" "}
-                          <strong>{inspectedCellOccupants.map((player) => player.nickname).join(", ")}</strong>
-                        </p>
-                      )}
-                      {inspectedCellJailGroups &&
-                        (inspectedCellJailGroups.jailPlayers.length > 0 ||
-                          inspectedCellJailGroups.visitingPlayers.length > 0) && (
-                          <p className="cell-inspector-note">
-                            Jail split:{" "}
-                            <strong>
-                              {inspectedCellJailGroups.jailPlayers.length} jailed
-                            </strong>{" "}
-                            &middot;{" "}
-                            <strong>{inspectedCellJailGroups.visitingPlayers.length} visiting</strong>
-                          </p>
-                        )}
-                      {inspectedCellMortgaged && (
-                        <p className="cell-inspector-note">
-                          Mortgage is active, so this cell is not charging rent right now.
-                        </p>
-                      )}
-                    </section>
-                  )}
-
-                  {inspectedPlayer && (
-                    <section
-                      className="game-summary player-inspector board-center-section"
-                      style={
-                        inspectedPlayerColor
-                          ? { "--player-inspector-color": inspectedPlayerColor }
-                          : undefined
-                      }
-                    >
-                      <div className="cell-inspector-header">
-                        <div>
-                          <h3>Selected player</h3>
-                          <p className="cell-inspector-title">
-                            <strong>
-                              {inspectedPlayer.nickname}
-                              {inspectedPlayer.player_id === playerId ? " (you)" : ""}
-                            </strong>
-                          </p>
-                        </div>
-                        <button
-                          type="button"
-                          className="recent-events-clear-focus"
-                          onClick={clearRecentEventFocus}
-                        >
-                          Clear
-                        </button>
-                      </div>
-                      <p className="cell-inspector-description">
-                        {inspectedPlayerIsCurrentTurn
-                          ? "This player is taking the current turn."
-                          : "This player is waiting for their next turn."}
-                      </p>
-                      <div className="cell-inspector-meta">
-                        <article className="cell-inspector-stat">
-                          <span>Cash</span>
-                          <strong>${inspectedPlayerCash}</strong>
-                        </article>
-                        <article className="cell-inspector-stat">
-                          <span>Position</span>
-                          <strong>
-                            Cell {inspectedPlayerPosition}
-                            {inspectedPlayerCell ? ` - ${inspectedPlayerCell.name}` : ""}
-                          </strong>
-                        </article>
-                        <article className="cell-inspector-stat">
-                          <span>Status</span>
-                          <strong>
-                            {pendingBankruptcy?.player_id === inspectedPlayer.player_id
-                              ? "In debt"
-                              : inspectedPlayerInJail
-                                ? "In jail"
-                                : inspectedPlayerIsCurrentTurn
-                                  ? "Current turn"
-                                  : "Waiting"}
-                          </strong>
-                        </article>
-                        <article className="cell-inspector-stat">
-                          <span>Owned cells</span>
-                          <strong>{inspectedPlayerOwnedCells.length}</strong>
-                        </article>
-                        <article className="cell-inspector-stat">
-                          <span>Mortgaged cells</span>
-                          <strong>{inspectedPlayerMortgagedCellCount}</strong>
-                        </article>
-                        {inspectedPlayerLinkedEventCount > 0 && (
-                          <article className="cell-inspector-stat">
-                            <span>Recent events</span>
-                            <strong>{inspectedPlayerLinkedEventCount}</strong>
-                          </article>
-                        )}
-                      </div>
-                      {inspectedPlayerCanBeTradeTarget && (
-                        <div className="cell-inspector-actions">
-                          <button
-                            type="button"
-                            className="trade-button accept-button"
-                            onClick={() => {
-                              setSelectedTradeTargetId(inspectedPlayer.player_id);
-                              setStatus(
-                                inspectedPlayerIsSelectedTradeTarget
-                                  ? `${inspectedPlayer.nickname} is already selected in the trade form.`
-                                  : `Prepared ${inspectedPlayer.nickname} in the trade form below.`,
-                              );
-                            }}
-                            disabled={isSubmitting}
-                          >
-                            {inspectedPlayerIsSelectedTradeTarget
-                              ? "Selected for trade"
-                              : "Select for trade"}
-                          </button>
-                        </div>
-                      )}
-                      {inspectedPlayerTradeMessage && (
-                        <p className="cell-inspector-helper">{inspectedPlayerTradeMessage}</p>
-                      )}
-                      {inspectedPlayerInJail && (
-                        <p className="cell-inspector-note">
-                          In jail — turn <strong>{inspectedPlayerTurnsInJail}/3</strong>.{" "}
-                          {inspectedPlayerTurnsInJail >= 2
-                            ? "Next failed roll forces the fine and movement."
-                            : "They can roll doubles to leave or pay before rolling."}
-                        </p>
-                      )}
-                      {inspectedPlayerDebtMessage && (
-                        <p className="cell-inspector-note">{inspectedPlayerDebtMessage}</p>
-                      )}
-                      {inspectedPlayerOwnedCellsPreview.length > 0 && (
-                        <p className="cell-inspector-note">
-                          Properties:{" "}
-                          <strong>
-                            {inspectedPlayerOwnedCellsPreview.map((cell) => cell.name).join(", ")}
-                            {inspectedPlayerOwnedCells.length > inspectedPlayerOwnedCellsPreview.length
-                              ? ` +${inspectedPlayerOwnedCells.length - inspectedPlayerOwnedCellsPreview.length} more`
-                              : ""}
-                          </strong>
-                        </p>
-                      )}
-                    </section>
-                  )}
-
-                  {lastBankruptcySummary && (
-                    <BankruptcySummaryCard
-                      summary={lastBankruptcySummary}
-                      title="Latest bankruptcy recap"
-                    />
-                  )}
-
-                  <div
-                    ref={(element) => setActionSectionRef("actions", element)}
-                    className={`room-actions board-center-actions board-center-focus-target ${
-                      actionGuide.targetKey === "actions" ? "is-guide-target" : ""
-                    } ${getActionGuideFlashClassName("actions")}`}
-                    style={getActionGuideFlashStyle("actions")}
-                  >
-                    {pendingPurchaseCell && !canResolvePurchase && (
-                      <p className="purchase-note">
-                        Waiting for {pendingPurchasePlayer?.nickname ?? "the active player"} to buy or
-                        pass on {pendingPurchaseCell.name}.
-                      </p>
-                    )}
-                    {canResolvePurchase && (
-                      <p className="purchase-note">
-                        You can buy {pendingPurchaseCell.name} for ${pendingPurchase?.price} or pass.
-                      </p>
-                    )}
-                    {pendingAuction && !canBidInAuction && (
-                      <p className="purchase-note">
-                        Waiting for {pendingAuctionActivePlayer?.nickname ?? "the current bidder"} to
-                        bid or pass on{" "}
-                        {pendingAuctionCell?.name ?? pendingAuction.cell_name}.
-                      </p>
-                    )}
-                    {pendingAuction && canBidInAuction && (
-                      <p className="purchase-note">
-                        You can bid at least ${minimumAuctionBid} for{" "}
-                        {pendingAuctionCell?.name ?? pendingAuction.cell_name}, or pass.
-                      </p>
-                    )}
-                    {pendingTrade && !canAcceptTrade && !canRejectTrade && (
-                      <p className="purchase-note">
-                        Waiting for {pendingTradeReceiver?.nickname ?? "the receiving player"} to
-                        respond to the trade offer for {pendingTradeCell?.name ?? pendingTrade.cell_name}.
-                      </p>
-                    )}
-                    {canAcceptTrade && (
-                      <p className="purchase-note">
-                        You can accept or reject the trade for{" "}
-                        {pendingTradeCell?.name ?? pendingTrade.cell_name}.
-                      </p>
-                    )}
-                    {pendingTrade?.proposer_id === playerId && (
-                      <p className="purchase-note">
-                        Your turn is paused until the trade is accepted, rejected, or cancelled.
-                      </p>
-                    )}
-                    {pendingBankruptcy && !canManageDebtRecovery && (
-                      <p className="purchase-note">
-                        Waiting for {pendingBankruptcyPlayer?.nickname ?? "the active player"} to raise $
-                        {pendingBankruptcy.amount_owed} owed to {pendingBankruptcyCreditorLabel} or
-                        declare bankruptcy.
-                      </p>
-                    )}
-                    {canManageDebtRecovery && (
-                      <p className="purchase-note">
-                        You owe {pendingBankruptcyCreditorLabel} ${pendingBankruptcy?.amount_owed ?? 0}.
-                        Sell upgrades, mortgage cells, or trade property for cash to cover the debt, or
-                        declare bankruptcy. If you go bankrupt, any remaining upgrades are sold back to
-                        the bank automatically before your properties go to the creditor, and any already mortgaged
-                        properties stay mortgaged when they transfer.
-                      </p>
-                    )}
-                    {isCurrentPlayerInJail && (
-                      <p className="jail-notice">
-                        You are in jail. Turn {currentPlayerTurnsInJail}/3.{" "}
-                        {currentPlayerTurnsInJail >= 2
-                          ? `Next failed roll forces a $${JAIL_FINE_AMOUNT} fine and you move.`
-                          : `Roll doubles to escape for free, or pay $${JAIL_FINE_AMOUNT} before rolling.`}
-                      </p>
-                    )}
-                    {canPayJailFine && (
-                      <button
-                        type="button"
-                        className="buy-button"
-                        data-guide-focus="pay-jail-fine"
-                        onClick={handlePayJailFine}
-                        disabled={isSubmitting || !canAffordJailFine}
-                      >
-                        Pay ${JAIL_FINE_AMOUNT} fine
-                      </button>
-                    )}
-                    {canPayJailFine && !canAffordJailFine && (
-                      <p className="purchase-note">
-                        You need at least ${JAIL_FINE_AMOUNT} cash to pay your way out before rolling.
-                      </p>
-                    )}
-                    {canDeclareBankruptcy && (
-                      <button
-                        type="button"
-                        className="pass-button"
-                        data-guide-focus="declare-bankruptcy"
-                        onClick={handleDeclareBankruptcy}
-                        disabled={isSubmitting}
-                      >
-                        Declare bankruptcy
-                      </button>
-                    )}
-                    {!isCurrentPlayerInJail && currentPlayerDoublesStreak > 0 && (
-                      <p className="doubles-notice">
-                        Doubles streak: {currentPlayerDoublesStreak}/3 - one more and you go to jail!
-                      </p>
-                    )}
-                    <button
-                      type="button"
-                      className="start-button"
-                      data-guide-focus="roll-dice"
-                      onClick={handleRollDice}
-                      disabled={isSubmitting || !canRollDice}
-                    >
-                      {isCurrentPlayerInJail ? "Roll dice (jail)" : "Roll dice"}
-                    </button>
-                    {canResolvePurchase && (
-                      <>
-                        <button
-                          type="button"
-                          className="buy-button"
-                          data-guide-focus="buy-property"
-                          onClick={handleBuyProperty}
-                          disabled={isSubmitting}
-                        >
-                          Buy property
-                        </button>
-                        <button
-                          type="button"
-                          className="pass-button"
-                          data-guide-focus="skip-purchase"
-                          onClick={handleSkipPurchase}
-                          disabled={isSubmitting}
-                        >
-                          Pass on purchase
-                        </button>
-                      </>
-                    )}
-                    <button
-                      type="button"
-                      className="leave-button"
-                      onClick={handleLeaveRoom}
-                      disabled={isSubmitting}
-                    >
-                      Leave room
-                    </button>
-                  </div>
-
-                  {pendingPurchaseCell && (
-                    <section
-                      ref={(element) => setActionSectionRef("purchase", element)}
-                      className={`purchase-card board-center-section board-center-focus-target ${
-                        actionGuide.targetKey === "purchase" ? "is-guide-target" : ""
-                      } ${getActionGuideFlashClassName("purchase")}`}
-                      style={getActionGuideFlashStyle("purchase")}
-                    >
-                      <h3>Buy or pass</h3>
-                      <p>
-                        {pendingPurchasePlayer?.nickname ?? "A player"} can buy{" "}
-                        <strong>{pendingPurchaseCell.name}</strong> for{" "}
-                        <strong>${pendingPurchase?.price}</strong>.
-                      </p>
-                      <p>
-                        Type: <strong>{formatCellType(pendingPurchaseCell.cell_type)}</strong>
-                      </p>
-                    </section>
-                  )}
-
-                  {pendingAuction && (
-                    <section
-                      ref={(element) => setActionSectionRef("auction", element)}
-                      className={`trade-card board-center-section board-center-focus-target ${
-                        actionGuide.targetKey === "auction" ? "is-guide-target" : ""
-                      } ${getActionGuideFlashClassName("auction")}`}
-                      style={getActionGuideFlashStyle("auction")}
-                    >
-                      <h3>Auction</h3>
-                      <p>
-                        <strong>{pendingAuctionCell?.name ?? pendingAuction.cell_name}</strong> is
-                        now being auctioned after{" "}
-                        <strong>{pendingAuctionInitiator?.nickname ?? "the active player"}</strong>{" "}
-                        passed on the direct purchase.
-                      </p>
-                      <p className="trade-meta">
-                        Type:{" "}
-                        <strong>
-                          {formatCellType(pendingAuctionCell?.cell_type ?? pendingAuction.cell_type)}
-                        </strong>
-                      </p>
-                      <p className="trade-meta">
-                        Printed price: <strong>${pendingAuction.price}</strong> &middot; Current bid:{" "}
-                        <strong>${pendingAuction.current_bid}</strong>
-                      </p>
-                      <p className="trade-meta">
-                        Highest bidder:{" "}
-                        <strong>{pendingAuctionHighestBidder?.nickname ?? "No bids yet"}</strong>{" "}
-                        &middot; Active player:{" "}
-                        <strong>{pendingAuctionActivePlayer?.nickname ?? "Waiting"}</strong>
-                      </p>
-                      {pendingAuctionPassedPlayers.length > 0 && (
-                        <p className="trade-meta">
-                          Passed:{" "}
-                          <strong>
-                            {pendingAuctionPassedPlayers.map((player) => player.nickname).join(", ")}
-                          </strong>
-                        </p>
-                      )}
-                      {canBidInAuction ? (
-                        <>
-                          <div className="trade-form">
-                            <label className="trade-field">
-                              <span>Your bid</span>
-                              <input
-                                className="trade-input"
-                                type="number"
-                                data-guide-focus="auction-bid-input"
-                                min={minimumAuctionBid}
-                                step="1"
-                                value={auctionBidAmount}
-                                onChange={(event) => setAuctionBidAmount(event.target.value)}
-                              />
-                            </label>
-                          </div>
-                          <div className="trade-actions">
-                            <button
-                              type="button"
-                              className="trade-button accept-button"
-                              data-guide-focus="auction-place-bid"
-                              onClick={handleBidInAuction}
-                              disabled={isSubmitting || !canAffordAuctionBid}
-                            >
-                              Place bid
-                            </button>
-                            <button
-                              type="button"
-                              className="trade-button reject-button"
-                              data-guide-focus="auction-pass"
-                              onClick={handlePassAuction}
-                              disabled={isSubmitting || !canPassAuction}
-                            >
-                              Pass
-                            </button>
-                          </div>
-                          <p className="trade-note">
-                            Minimum next bid: <strong>${minimumAuctionBid}</strong> &middot; Your
-                            cash: <strong>${currentPlayerCash}</strong>
-                          </p>
-                          {!canAffordAuctionBid && (
-                            <p className="trade-note">
-                              You cannot afford the next bid, so the only valid move is to pass.
-                            </p>
-                          )}
-                        </>
-                      ) : (
-                        <p className="trade-note">
-                          Waiting for {pendingAuctionActivePlayer?.nickname ?? "the active bidder"} to
-                          bid or pass.
-                        </p>
-                      )}
-                    </section>
-                  )}
-
-                  {showTradeDesk && (
-                    <section
-                      ref={(element) => setActionSectionRef("trade", element)}
-                      id="desk-trade"
-                      className={`trade-card board-center-section board-center-focus-target ${
-                        actionGuide.targetKey === "trade" ? "is-guide-target" : ""
-                      } ${getActionGuideFlashClassName("trade")}`}
-                      style={getActionGuideFlashStyle("trade")}
-                    >
-                      <DeskSectionHeader
-                        title="Trade desk"
-                        sectionId="desk-trade"
-                        statusLabel={tradeDeskState.statusLabel}
-                        statusTone={tradeDeskState.statusTone}
-                        note={tradeDeskState.note}
-                        isCollapsible={isDeskCollapsible(tradeDeskState.statusTone)}
-                        isCollapsed={tradeDeskCollapsed}
-                        onToggleCollapse={() => toggleDeskCollapsed("trade")}
-                      />
-                      {!tradeDeskCollapsed && (pendingTrade ? (
-                        <>
-                          <p>
-                            <strong>{pendingTradeProposer?.nickname ?? "A player"}</strong> offers{" "}
-                            <strong>{pendingTradeCell?.name ?? pendingTrade.cell_name}</strong> to{" "}
-                            <strong>{pendingTradeReceiver?.nickname ?? "another player"}</strong> for{" "}
-                            <strong>${pendingTrade.cash_amount}</strong>.
-                          </p>
-                          <p className="trade-meta">
-                            Type:{" "}
-                            <strong>
-                              {formatCellType(pendingTradeCell?.cell_type ?? pendingTrade.cell_type)}
-                            </strong>
-                          </p>
-                          <div className="trade-actions">
-                            {canAcceptTrade && (
-                              <button
-                                type="button"
-                                className="trade-button accept-button"
-                                data-guide-focus="accept-trade"
-                                onClick={() => handleRespondTrade(true)}
-                                disabled={isSubmitting}
-                              >
-                                Accept trade
-                              </button>
-                            )}
-                            {canRejectTrade && (
-                              <button
-                                type="button"
-                                className="trade-button reject-button"
-                                data-guide-focus="reject-trade"
-                                onClick={() => handleRespondTrade(false)}
-                                disabled={isSubmitting}
-                              >
-                                {pendingTrade?.proposer_id === playerId ? "Cancel offer" : "Reject trade"}
-                              </button>
-                            )}
-                          </div>
-                          {!canAcceptTrade && !canRejectTrade && (
-                            <p className="trade-note">
-                              Waiting for {pendingTradeReceiver?.nickname ?? "the receiving player"} to
-                              accept or reject the offer.
-                            </p>
-                          )}
-                        </>
-                      ) : canShowTradeForm ? (
-                        <>
-                          <p>
-                            {canManageDebtRecovery
-                              ? "Offer one of your unmortgaged cells for cash to escape bankruptcy."
-                              : "Offer one of your unmortgaged cells for cash before rolling."}{" "}
-                            Property-for-cash only in this version.
-                          </p>
-                          <div className="trade-form">
-                            <label className="trade-field">
-                              <span>Offer cell</span>
-                              <select
-                                className="trade-select"
-                                data-guide-focus="trade-offer-cell"
-                                value={selectedTradePosition}
-                                onChange={(event) => setSelectedTradePosition(event.target.value)}
-                              >
-                                {tradeableCells.map((cell) => (
-                                  <option key={cell.index} value={cell.index}>
-                                    {cell.name}
-                                  </option>
-                                ))}
-                              </select>
-                            </label>
-                            <label className="trade-field">
-                              <span>Trade with</span>
-                              <select
-                                className="trade-select"
-                                data-guide-focus="trade-target-player"
-                                value={selectedTradeTargetId}
-                                onChange={(event) => setSelectedTradeTargetId(event.target.value)}
-                              >
-                                {tradeTargets.map((player) => (
-                                  <option key={player.player_id} value={player.player_id}>
-                                    {player.nickname}
-                                  </option>
-                                ))}
-                              </select>
-                            </label>
-                            <label className="trade-field">
-                              <span>Cash requested</span>
-                              <input
-                                className="trade-input"
-                                type="number"
-                                data-guide-focus="trade-cash-requested"
-                                min="0"
-                                step="1"
-                                value={tradeCashAmount}
-                                onChange={(event) => setTradeCashAmount(event.target.value)}
-                              />
-                            </label>
-                            <button
-                              type="button"
-                              className="trade-button"
-                              data-guide-focus="propose-trade"
-                              onClick={handleProposeTrade}
-                              disabled={
-                                isSubmitting ||
-                                !canProposeTrade ||
-                                tradeableCells.length === 0 ||
-                                tradeTargets.length === 0
-                              }
-                            >
-                              Propose trade
-                            </button>
-                          </div>
-                        </>
-                      ) : (
-                        <p className="trade-note">{tradeDeskState.note}</p>
-                      ))}
-                    </section>
-                  )}
-
-                  {showMortgageDesk && (
-                    <section
-                      ref={(element) => setActionSectionRef("mortgage", element)}
-                      id="desk-mortgage"
-                      className={`mortgage-card board-center-section board-center-focus-target ${
-                        actionGuide.targetKey === "mortgage" ? "is-guide-target" : ""
-                      } ${getActionGuideFlashClassName("mortgage")}`}
-                      style={getActionGuideFlashStyle("mortgage")}
-                    >
-                      <DeskSectionHeader
-                        title="Mortgage desk"
-                        sectionId="desk-mortgage"
-                        statusLabel={mortgageDeskState.statusLabel}
-                        statusTone={mortgageDeskState.statusTone}
-                        note={mortgageDeskState.note}
-                        isCollapsible={isDeskCollapsible(mortgageDeskState.statusTone)}
-                        isCollapsed={mortgageDeskCollapsed}
-                        onToggleCollapse={() => toggleDeskCollapsed("mortgage")}
-                      />
-                      {!mortgageDeskCollapsed && (showMortgageLists ? (
-                        <>
-                          <p>
-                            {canManageDebtRecovery
-                              ? "Raise cash to escape bankruptcy. Mortgages add cash immediately and stop rent until you buy the property back."
-                              : "Use mortgages to raise cash before rolling. Mortgaged cells stop charging rent until you buy them back."}
-                          </p>
-
-                          {mortgageableCells.length > 0 && (
-                        <div className="mortgage-group">
-                          <h4>Available to mortgage</h4>
-                          <div className="mortgage-list">
-                            {mortgageableCells.map((cell, index) => {
-                              const mortgageValue = getMortgageValue(cell);
-                              return (
-                                <article key={cell.index} className="mortgage-option">
-                                  <div>
-                                    <h5>{cell.name}</h5>
-                                    <p>
-                                      You receive: <strong>${mortgageValue}</strong>
-                                    </p>
-                                  </div>
-                                  <button
-                                    type="button"
-                                    className="mortgage-button"
-                                    data-guide-focus={index === 0 ? "mortgage-first" : undefined}
-                                    onClick={() => handleMortgageProperty(cell.index)}
-                                    disabled={isSubmitting || !canManageMortgages}
-                                  >
-                                    Mortgage
-                                  </button>
-                                </article>
-                              );
-                            })}
-                          </div>
-                        </div>
-                          )}
-
-                          {unmortgageableCells.length > 0 && !canManageDebtRecovery && (
-                        <div className="mortgage-group">
-                          <h4>Currently mortgaged</h4>
-                          <div className="mortgage-list">
-                            {unmortgageableCells.map((cell, index) => {
-                              const unmortgageCost = getUnmortgageCost(cell);
-                              return (
-                                <article key={cell.index} className="mortgage-option is-mortgaged">
-                                  <div>
-                                    <h5>{cell.name}</h5>
-                                    <p>
-                                      Buy-back cost: <strong>${unmortgageCost}</strong>
-                                    </p>
-                                  </div>
-                                  <button
-                                    type="button"
-                                    className="unmortgage-button"
-                                    data-guide-focus={index === 0 ? "unmortgage-first" : undefined}
-                                    onClick={() => handleUnmortgageProperty(cell.index)}
-                                    disabled={isSubmitting || !canUnmortgageProperties}
-                                  >
-                                    Unmortgage
-                                  </button>
-                                </article>
-                              );
-                            })}
-                          </div>
-                        </div>
-                          )}
-
-                          {!canManageMortgages && !canManageDebtRecovery && (
-                            <p className="mortgage-note">
-                              Mortgages can only be managed at the start of your turn, before you roll.
-                            </p>
-                          )}
-                        </>
-                      ) : (
-                        <p className="mortgage-note">{mortgageDeskState.note}</p>
-                      ))}
-                    </section>
-                  )}
-
-                  {showUpgradeDesk && (
-                    <section
-                      ref={(element) => setActionSectionRef("upgrade", element)}
-                      id="desk-upgrade"
-                      className={`upgrade-card board-center-section board-center-focus-target ${
-                        actionGuide.targetKey === "upgrade" ? "is-guide-target" : ""
-                      } ${getActionGuideFlashClassName("upgrade")}`}
-                      style={getActionGuideFlashStyle("upgrade")}
-                    >
-                      <DeskSectionHeader
-                        title="Upgrades desk"
-                        sectionId="desk-upgrade"
-                        statusLabel={upgradeDeskState.statusLabel}
-                        statusTone={upgradeDeskState.statusTone}
-                        note={upgradeDeskState.note}
-                        isCollapsible={isDeskCollapsible(upgradeDeskState.statusTone)}
-                        isCollapsed={upgradeDeskCollapsed}
-                        onToggleCollapse={() => toggleDeskCollapsed("upgrade")}
-                      />
-                      {!upgradeDeskCollapsed && (showUpgradeLists ? (
-                        <>
-                          <p>
-                            {canManageDebtRecovery
-                              ? "Sell upgrades to raise cash and escape bankruptcy. Building is locked until your debts are cleared."
-                              : "Build or sell upgrades before rolling. This is a simplified upgrade system."}
-                          </p>
-                          {!canManageDebtRecovery && upgradeableProperties.length > 0 && (
-                        <div className="upgrade-group">
-                          <h4>Build upgrades</h4>
-                          <div className="upgrade-list">
-                            {upgradeableProperties.map((cell, index) => {
-                              const level = propertyLevels[cell.index] ?? 0;
-                              const nextLevel = level + 1;
-                              const upgradeCost = getUpgradeCost(cell);
-                              const currentRent = getRentHint(cell, level);
-                              const nextRent = getRentHint(cell, nextLevel);
-
-                              return (
-                                <article key={cell.index} className="upgrade-option">
-                                  <div>
-                                    <h4>{cell.name}</h4>
-                                    <p>
-                                      Group:{" "}
-                                      <strong>{formatCellType(cell.color_group ?? "property")}</strong>
-                                    </p>
-                                    <p>
-                                      Level <strong>{level}</strong> {"→"} <strong>{nextLevel}</strong>
-                                    </p>
-                                    <p>
-                                      Rent: {currentRent?.replace("Rent: ", "")} {"→"} <strong>{nextRent?.replace("Rent: ", "")}</strong>
-                                    </p>
-                                    <p>
-                                      Cost: <strong>${upgradeCost}</strong>
-                                    </p>
-                                  </div>
-                                  <button
-                                    type="button"
-                                    className="upgrade-button"
-                                    data-guide-focus={index === 0 ? "upgrade-first" : undefined}
-                                    onClick={() => handleUpgradeProperty(cell.index)}
-                                    disabled={isSubmitting || !canUpgradeProperties}
-                                  >
-                                    Upgrade
-                                  </button>
-                                </article>
-                              );
-                            })}
-                          </div>
-                        </div>
-                          )}
-                          {sellableProperties.length > 0 && (
-                        <div className="upgrade-group">
-                          <h4>Sell upgrades</h4>
-                          <div className="upgrade-list">
-                            {sellableProperties.map((cell, index) => {
-                              const level = propertyLevels[cell.index] ?? 0;
-                              const nextLevel = Math.max(0, level - 1);
-                              const sellValue = getUpgradeSellValue(cell);
-                              const currentRent = getRentHint(cell, level);
-                              const nextRent = getRentHint(cell, nextLevel);
-
-                              return (
-                                <article key={cell.index} className="upgrade-option sell-option">
-                                  <div>
-                                    <h4>{cell.name}</h4>
-                                    <p>
-                                      Level <strong>{level}</strong> {"→"} <strong>{nextLevel}</strong>
-                                    </p>
-                                    <p>
-                                      Rent: {currentRent?.replace("Rent: ", "")} {"→"} <strong>{nextRent?.replace("Rent: ", "")}</strong>
-                                    </p>
-                                    <p>
-                                      Cash back: <strong>${sellValue}</strong>
-                                    </p>
-                                  </div>
-                                  <button
-                                    type="button"
-                                    className="sell-button"
-                                    data-guide-focus={index === 0 ? "sell-upgrade-first" : undefined}
-                                    onClick={() => handleSellUpgradeProperty(cell.index)}
-                                    disabled={isSubmitting || !canSellUpgrades}
-                                  >
-                                    Sell upgrade
-                                  </button>
-                                </article>
-                              );
-                            })}
-                          </div>
-                        </div>
-                          )}
-                          {!canUpgradeProperties && !canManageDebtRecovery && (
-                            <p className="upgrade-note">
-                              Upgrade changes are only available at the start of your own turn, before you roll.
-                            </p>
-                          )}
-                        </>
-                      ) : (
-                        <p className="upgrade-note">{upgradeDeskState.note}</p>
-                      ))}
-                    </section>
-                  )}
-
-                  <RecentEventsCard
-                    events={priorRecentEvents}
-                    title="Recent events"
-                    maxGroups={4}
-                    selectedKind={getRecentEventsSelectedKind("game")}
-                    expandedGroups={getRecentEventsExpandedState("game")}
-                    freshEventIds={freshRecentEventIds}
-                    focusedEventId={focusedRecentEventId}
-                    entityFilter={recentEventsEntityFilter}
-                    onSelectKind={(kind) => handleRecentEventsKindChange("game", kind)}
-                    onToggleGroup={(groupKey) => handleRecentEventsGroupToggle("game", groupKey)}
-                    onFocusEvent={handleRecentEventFocus}
-                    onClearFocus={clearRecentEventFocus}
-                    showNavigationHelp
-                    isNavigationHelpCollapsed={isRecentEventsHelpCollapsed}
-                    onToggleNavigationHelp={handleRecentEventsHelpToggle}
-                    onResetNavigationHelp={hasStoredHelpPreference ? handleRecentEventsHelpReset : undefined}
-                    announceUpdates
-                    clearFocusAnnouncementId={recentEventsClearFocusAnnouncementId}
-                  />
-
-                  {lastDrawnCard && (
-                    <section className="drawn-card board-center-section">
-                      <h3>{lastDrawnCard.deck} card</h3>
-                      <p>
-                        <strong>{lastDrawnCard.title}</strong>
-                      </p>
-                      <p>{lastDrawnCard.description}</p>
-                    </section>
-                  )}
-                </section>
-
-                {boardCells.map((cell) => {
-                  const occupants = currentRoom.players.filter((player) => {
-                    const playerPosition = playerPositions?.[player.player_id];
-                    return Number.isInteger(playerPosition) && playerPosition === cell.index;
-                  });
-                  const { jailPlayers, visitingPlayers } =
-                    cell.index === JAIL_POSITION
-                      ? splitJailOccupants(occupants, currentRoom.game?.in_jail ?? {})
-                      : { jailPlayers: [], visitingPlayers: occupants };
-                  const { row, column } = getBoardPlacement(cell.index);
-                  const boardSide = getBoardSide(cell.index);
-                  const groupClass = cell.color_group ? `cell-group-${cell.color_group}` : "";
-                  const linkedEventCount = cellRecentEventCounts[cell.index] ?? 0;
-                  const linkedEventLabel = formatLinkedEventLabel(linkedEventCount, cell.name);
-                  const ownerPlayerId = propertyOwners[cell.index] ?? null;
-                  const ownerPlayer = ownerPlayerId ? getPlayerById(ownerPlayerId) : null;
-                  const ownerColor = ownerPlayer ? getPlayerColor(ownerPlayer.player_id) : null;
-
-                  return (
-                    <article
-                      key={cell.index}
-                      ref={(element) => {
-                        if (element) {
-                          boardCellRefs.current[cell.index] = element;
-                        } else {
-                          delete boardCellRefs.current[cell.index];
-                        }
-                      }}
-                      className={`cell-tile cell-side-${boardSide} ${groupClass} ${
-                        lastLandedCell?.index === cell.index ? "is-landed" : ""
-                      } ${focusedEventCellIndex === cell.index ? "is-focused" : ""} ${
-                        movedCellIndexSet.has(cell.index) ? "is-move-target" : ""
-                      } ${ownerPlayer ? "is-owned" : ""} ${
-                        ownerPlayer?.player_id === playerId ? "is-owned-by-you" : ""
-                      } is-actionable`}
-                      role="button"
-                      tabIndex={0}
-                      onClick={() => handleBoardCellFocus(cell)}
-                      onKeyDown={(event) => {
-                        if (event.key === "Enter" || event.key === " ") {
-                          event.preventDefault();
-                          handleBoardCellFocus(cell);
-                        }
-                      }}
-                      style={{
-                        gridRow: row,
-                        gridColumn: column,
-                        ...(ownerColor ? { "--cell-owner-color": ownerColor } : {}),
-                      }}
-                    >
-                      <span className={`cell-band cell-band-${cell.cell_type}`} aria-hidden="true" />
-                      {linkedEventCount > 0 && (
-                        <span
-                          className="cell-event-count-badge"
-                          title={linkedEventLabel}
-                          aria-label={linkedEventLabel}
-                        >
-                          {formatLinkedEventCount(linkedEventCount)}
-                        </span>
-                      )}
-                      <h4>{cell.name}</h4>
-                      {ownerPlayer && (
-                        <p
-                          className="cell-owner-badge"
-                          title={`Owned by ${ownerPlayer.nickname}`}
-                          aria-label={`Owned by ${ownerPlayer.nickname}`}
-                        >
-                          <span className="cell-owner-dot" aria-hidden="true" />
-                          <span className="cell-owner-label">
-                            {getPlayerTokenLabel(ownerPlayer.nickname)}
-                          </span>
-                        </p>
-                      )}
-                      {propertyMortgaged[cell.index] && (
-                        <p className="cell-mortgaged-badge">Mortgaged</p>
-                      )}
-                      {cell.cell_type === "property" && (propertyLevels[cell.index] ?? 0) > 0 && (
-                        <p className="cell-level-badge">
-                          Level {propertyLevels[cell.index]}
-                        </p>
-                      )}
-                      {cell.index === JAIL_POSITION ? (
-                        <div className="cell-jail-layout">
-                          {visitingPlayers.length > 0 && (
-                            <div className="cell-occupants cell-visiting-zone">
-                              {visitingPlayers.map((player, occupantIndex) =>
-                                renderPlayerToken(player, occupantIndex),
-                              )}
-                            </div>
-                          )}
-                          {jailPlayers.length > 0 && (
-                            <div className="cell-occupants cell-jail-zone">
-                              {jailPlayers.map((player, occupantIndex) =>
-                                renderPlayerToken(player, occupantIndex),
-                              )}
-                            </div>
-                          )}
-                        </div>
-                      ) : (
-                        occupants.length > 0 && (
-                          <div className="cell-occupants">
-                            {occupants.map((player, occupantIndex) =>
-                              renderPlayerToken(player, occupantIndex),
-                            )}
-                          </div>
-                        )
-                      )}
-                    </article>
-                  );
-                })}
-              </div>
-            </section>
-
-            <section className="board-grid">
-	              {currentRoom.players.map((player) => (
-	                (() => {
-	                  const linkedEventCount = playerRecentEventCounts[player.player_id] ?? 0;
-	                  const linkedEventLabel = formatLinkedEventLabel(
-	                    linkedEventCount,
-	                    player.nickname,
-	                  );
-	                  const playerPosition = getPlayerPosition(player.player_id);
-	                  const playerCell = getPlayerCell(player.player_id);
-	                  const playerLevel = propertyLevels[playerPosition] ?? 0;
-	                  const playerRentHint = getRentHint(playerCell, playerLevel);
-	                  const playerOwnedCellCount = getOwnedCellsByPlayer(player.player_id).length;
-	                  const playerMortgagedCellCount = getMortgagedOwnedCellCount(player.player_id);
-	                  const isTradeTargetReady = selectedTradeTargetId === player.player_id;
-
-	                  return (
-	                <article
-	                  key={player.player_id}
-                  ref={(element) => {
-                    if (element) {
-                      playerCardRefs.current[player.player_id] = element;
-                    } else {
-                      delete playerCardRefs.current[player.player_id];
-                    }
-                  }}
-	                  className={`board-card ${player.player_id === playerId ? "is-you" : ""} ${
-	                    focusedPlayerIdSet.has(player.player_id) ? "is-focused" : ""
-	                  } ${isTradeTargetReady ? "is-trade-target" : ""} ${
-	                    currentTurnPlayerId === player.player_id ? "is-current-turn" : ""
-	                  }`}
-	                  role="button"
-	                  tabIndex={0}
-                  onClick={() => handlePlayerCardFocus(player)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" || event.key === " ") {
-                      event.preventDefault();
-                      handlePlayerCardFocus(player);
-                    }
-                  }}
-	                  >
-	                    <div className="board-card-header">
-	                      <h3>{player.nickname}</h3>
-	                      <div className="board-card-badges">
-	                        {isTradeTargetReady && (
-	                          <span className="board-card-target-badge">Trade target</span>
-	                        )}
-	                        {linkedEventCount > 0 && (
-	                          <span
-	                            className="board-card-event-count"
-	                            title={linkedEventLabel}
-	                            aria-label={linkedEventLabel}
-	                          >
-	                            {formatLinkedEventCount(linkedEventCount)}
-	                          </span>
-	                        )}
-	                      </div>
-	                  </div>
-	                  <p>
-	                    On:{" "}
-	                    <strong>
-	                      {playerCell?.name ?? `Cell ${playerPosition}`}
-	                    </strong>
-	                  </p>
-	                  {playerCell?.cell_type === "property" && (
-	                    <p>
-	                      Upgrade level:{" "}
-	                      <strong>{playerLevel}</strong>
-	                    </p>
-	                  )}
-	                  {playerRentHint && (
-	                    <p><strong>{playerRentHint}</strong></p>
-	                  )}
-	                  <p>
-	                    Cash: <strong>${currentRoom.game?.cash[player.player_id] ?? 0}</strong>
-	                  </p>
-	                  <p>
-	                    Owned cells:{" "}
-	                    <strong>{playerOwnedCellCount}</strong>
-	                  </p>
-	                  <p>
-	                    Mortgaged cells:{" "}
-	                    <strong>{playerMortgagedCellCount}</strong>
-	                  </p>
-                  <p>
-                    Status:{" "}
-                    <strong>
-                      {currentTurnPlayerId === player.player_id
-                        ? "Their turn"
-                        : currentRoom.game?.in_jail?.[player.player_id]
-                          ? "In jail"
-                          : "Waiting"}
-                    </strong>
-                  </p>
-                </article>
-                  );
-                })()
-              ))}
-            </section>
-          </section>
+            mortgageDeskCardProps={
+              showMortgageDesk
+                ? {
+                    sectionRef: (element) => setActionSectionRef("mortgage", element),
+                    className: `mortgage-card board-center-section board-center-focus-target ${
+                      actionGuide.targetKey === "mortgage" ? "is-guide-target" : ""
+                    } ${getActionGuideFlashClassName("mortgage")}`,
+                    style: getActionGuideFlashStyle("mortgage"),
+                    statusLabel: mortgageDeskState.statusLabel,
+                    statusTone: mortgageDeskState.statusTone,
+                    note: mortgageDeskState.note,
+                    isCollapsible: isDeskCollapsible(mortgageDeskState.statusTone),
+                    isCollapsed: mortgageDeskCollapsed,
+                    onToggleCollapse: () => toggleDeskCollapsed("mortgage"),
+                    showLists: showMortgageLists,
+                    canManageDebtRecovery,
+                    mortgageableCells,
+                    unmortgageableCells,
+                    isSubmitting,
+                    canManageMortgages,
+                    canUnmortgageProperties,
+                    getMortgageValue,
+                    getUnmortgageCost,
+                    onMortgage: handleMortgageProperty,
+                    onUnmortgage: handleUnmortgageProperty,
+                  }
+                : null
+            }
+            upgradesDeskCardProps={
+              showUpgradeDesk
+                ? {
+                    sectionRef: (element) => setActionSectionRef("upgrade", element),
+                    className: `upgrade-card board-center-section board-center-focus-target ${
+                      actionGuide.targetKey === "upgrade" ? "is-guide-target" : ""
+                    } ${getActionGuideFlashClassName("upgrade")}`,
+                    style: getActionGuideFlashStyle("upgrade"),
+                    statusLabel: upgradeDeskState.statusLabel,
+                    statusTone: upgradeDeskState.statusTone,
+                    note: upgradeDeskState.note,
+                    isCollapsible: isDeskCollapsible(upgradeDeskState.statusTone),
+                    isCollapsed: upgradeDeskCollapsed,
+                    onToggleCollapse: () => toggleDeskCollapsed("upgrade"),
+                    showLists: showUpgradeLists,
+                    canManageDebtRecovery,
+                    upgradeableProperties,
+                    sellableProperties,
+                    propertyLevels,
+                    isSubmitting,
+                    canUpgradeProperties,
+                    canSellUpgrades,
+                    getUpgradeCost,
+                    getUpgradeSellValue,
+                    getRentHint,
+                    formatCellType,
+                    onUpgrade: handleUpgradeProperty,
+                    onSellUpgrade: handleSellUpgradeProperty,
+                  }
+                : null
+            }
+            recentEventsCardProps={{
+              events: priorRecentEvents,
+              title: "Recent events",
+              maxGroups: 4,
+              selectedKind: getRecentEventsSelectedKind("game"),
+              expandedGroups: getRecentEventsExpandedState("game"),
+              freshEventIds: freshRecentEventIds,
+              focusedEventId: focusedRecentEventId,
+              entityFilter: recentEventsEntityFilter,
+              onSelectKind: (kind) => handleRecentEventsKindChange("game", kind),
+              onToggleGroup: (groupKey) => handleRecentEventsGroupToggle("game", groupKey),
+              onFocusEvent: handleRecentEventFocus,
+              onClearFocus: clearRecentEventFocus,
+              showNavigationHelp: true,
+              isNavigationHelpCollapsed: isRecentEventsHelpCollapsed,
+              onToggleNavigationHelp: handleRecentEventsHelpToggle,
+              announceUpdates: true,
+              clearFocusAnnouncementId: recentEventsClearFocusAnnouncementId,
+            }}
+            drawnCard={lastDrawnCard}
+            boardTilesLayerProps={{
+              boardCells,
+              players: currentRoom.players,
+              playerPositions,
+              inJailByPlayer: currentRoom.game?.in_jail ?? {},
+              jailPosition: JAIL_POSITION,
+              cellRecentEventCounts,
+              propertyOwners,
+              propertyMortgaged,
+              propertyLevels,
+              lastLandedCellIndex: lastLandedCell?.index ?? null,
+              focusedEventCellIndex,
+              movedCellIndexSet,
+              currentPlayerId: playerId,
+              getPlayerById,
+              getPlayerColor,
+              onTileRef: (cellIndex, element) => {
+                if (element) {
+                  boardCellRefs.current[cellIndex] = element;
+                } else {
+                  delete boardCellRefs.current[cellIndex];
+                }
+              },
+              onFocusCell: handleBoardCellFocus,
+              renderPlayerToken,
+            }}
+            boardPlayersGridProps={{
+              players: currentRoom.players,
+              playerRecentEventCounts,
+              selectedTradeTargetId,
+              currentTurnPlayerId,
+              inJailByPlayer: currentRoom.game?.in_jail ?? {},
+              currentPlayerId: playerId,
+              cashByPlayer: currentRoom.game?.cash ?? {},
+              focusedPlayerIdSet,
+              propertyLevels,
+              getPlayerPosition,
+              getPlayerCell,
+              getRentHint,
+              getOwnedCellsByPlayer,
+              getMortgagedOwnedCellCount,
+              onFocusPlayer: handlePlayerCardFocus,
+              onPlayerCardRef: (playerIdValue, element) => {
+                if (element) {
+                  playerCardRefs.current[playerIdValue] = element;
+                } else {
+                  delete playerCardRefs.current[playerIdValue];
+                }
+              },
+            }}
+          />
         )}
       </section>
     </main>

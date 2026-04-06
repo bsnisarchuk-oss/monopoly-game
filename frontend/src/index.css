@@ -388,7 +388,6 @@ h1 {
   border: none;
   border-radius: 999px;
   padding: 10px 14px;
-  font-weight: 800;
   cursor: pointer;
   transition:
     background-color 160ms ease,
@@ -399,6 +398,7 @@ h1 {
 .action-guide-jump {
   background: rgba(47, 67, 128, 0.1);
   color: #2d4367;
+  font-weight: 800;
 }
 
 .action-guide-jump:hover {
@@ -413,7 +413,9 @@ h1 {
 .action-guide-reset {
   background: rgba(255, 255, 255, 0.78);
   color: #556682;
-  box-shadow: inset 0 0 0 1px rgba(47, 67, 128, 0.12);
+  font-weight: 700;
+  font-size: 0.86rem;
+  box-shadow: inset 0 0 0 1px rgba(47, 67, 128, 0.18);
 }
 
 .action-guide-reset:hover {
@@ -750,7 +752,6 @@ h1 {
 
 .recent-events-actions-menu-toggle,
 .recent-events-help-toggle,
-.recent-events-reset-hints,
 .recent-events-clear-focus {
   border: none;
   border-radius: 999px;
@@ -763,7 +764,6 @@ h1 {
 
 .recent-events-actions-menu-toggle:hover,
 .recent-events-help-toggle:hover,
-.recent-events-reset-hints:hover,
 .recent-events-clear-focus:hover {
   background: rgba(47, 67, 128, 0.14);
 }
@@ -794,11 +794,6 @@ h1 {
 .recent-events-actions-menu-item {
   width: 100%;
   text-align: left;
-}
-
-.recent-events-reset-hints {
-  background: rgba(47, 67, 128, 0.05);
-  color: #4f5e7b;
 }
 
 .recent-events-context-note,
@@ -2100,10 +2095,14 @@ h1 {
     margin-top: 10px;
   }
 
-  .action-guide-jump,
-  .action-guide-reset {
+  .action-guide-jump {
     width: 100%;
     text-align: center;
+  }
+
+  .action-guide-reset {
+    align-self: flex-start;
+    font-size: 0.8rem;
   }
 
   .action-guide-list {
@@ -2189,7 +2188,6 @@ h1 {
 
   .recent-events-actions-menu-toggle,
   .recent-events-help-toggle,
-  .recent-events-reset-hints,
   .recent-events-clear-focus {
     width: fit-content;
   }

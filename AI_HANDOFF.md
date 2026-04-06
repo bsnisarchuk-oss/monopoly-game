@@ -50,6 +50,10 @@ Verified against real files on `2026-04-06`:
 - `start-backend.cmd`, `start-frontend.cmd`, `start-game.cmd` exist and match the current Windows flow
 - Frontend blank first screen bug is already fixed in `frontend/src/App.jsx`
 - Cause of the old bug: unsafe `currentRoom.players` access before room data existed
+- Frontend screen/layout refactor is already in progress:
+  - `LandingPanel`, `LobbyView`, `FinishedGameView`, `EliminatedGameView`, and `GameView` exist
+  - most large board-center cards and desk sections were already extracted into `frontend/src/components`
+- `frontend/src/App.jsx` is currently `2805` lines
 - Frontend checks:
   - `npm.cmd run lint` OK
   - `npm.cmd run build` OK
@@ -59,10 +63,12 @@ Current local modifications:
 - `frontend/src/App.jsx`
 - `frontend/src/index.css`
 - `.claude/settings.local.json`
+- `frontend/src/components/` contains many extracted UI files and still shows as untracked in `git status`
 
 Important:
 - `.claude/settings.local.json` is local tooling state; do not revert it unless explicitly asked
 - The current frontend changes are not only styling; they include real UI logic and accessibility behavior
+- If you prepare a commit, do not forget to include the new files under `frontend/src/components/`
 
 ## Core Architecture Rules
 - Server is authoritative
@@ -152,16 +158,18 @@ Important:
 - Selected cell inspector exists
 - Selected player inspector exists
 - Mobile cleanup has already been done
+- Board cell, player card, token, board layer, and player grid rendering are already extracted into separate frontend components
 
 ### Action guide and navigation UX
-- There is a central action guide card in `frontend/src/App.jsx`
-- It derives the current player guidance from real game state
+- There is a central action guide card in `frontend/src/components/ActionGuideCard.jsx`
+- Its state is built from real game state via `frontend/src/components/actionGuideHelpers.js`
 - It can show `Jump to ...` for the relevant active section
 - Jump uses `scrollIntoView({ block: "start" })`
 - Jump also moves keyboard focus to a preferred control when possible
 - A hidden `aria-live` region announces jump results
 - The target section gets temporary visual flash feedback
 - Section labels are normalized, including `Upgrades desk`
+- A single `Reset UI preferences` control already exists
 
 ### Desk sections UX
 - `Trade desk`, `Mortgage desk`, and `Upgrades desk` have status headers
@@ -169,10 +177,18 @@ Important:
 - Locked and empty desk sections are collapsible
 - These sections default to collapsed when they are explanatory only
 - Collapse preferences are stored in `localStorage`
-- The action guide shows `Reset desk layout` when custom desk collapse preferences exist
-- Reset clears the stored desk layout preferences
+- Recent-events help preference is also stored in `localStorage`
+- The action guide shows `Reset UI preferences` when custom local UI preferences exist
+- Reset clears both desk layout preferences and recent-events help preference
 - Reset also announces feedback through the action guide live region
 - Mobile tap target for the desk toggle was improved with an expanded invisible hit area
+
+## Current Frontend Refactor State
+- `frontend/src/App.jsx` is no longer a single giant render file, but it is still the orchestration layer
+- `App.jsx` still owns state, API calls, polling, refs, derived data, and action handlers
+- `frontend/src/components/GameView.jsx` now assembles the active in-game screen from extracted child components
+- The next major cleanup area is not more JSX extraction; it is the long inline prop-building for `GameView` inside `App.jsx`
+- Keep backend rules untouched during this refactor series
 
 ## Important Backend Files
 - `U:\Monopoly\backend\main.py`
@@ -184,6 +200,13 @@ Important:
 ## Important Frontend Files
 - `U:\Monopoly\frontend\src\App.jsx`
 - `U:\Monopoly\frontend\src\index.css`
+- `U:\Monopoly\frontend\src\components\GameView.jsx`
+- `U:\Monopoly\frontend\src\components\LandingPanel.jsx`
+- `U:\Monopoly\frontend\src\components\LobbyView.jsx`
+- `U:\Monopoly\frontend\src\components\ActionGuideCard.jsx`
+- `U:\Monopoly\frontend\src\components\RecentEventsCard.jsx`
+- `U:\Monopoly\frontend\src\components\actionGuideHelpers.js`
+- `U:\Monopoly\frontend\src\components\recentEventsHelpers.js`
 - `U:\Monopoly\start-backend.cmd`
 - `U:\Monopoly\start-frontend.cmd`
 - `U:\Monopoly\start-game.cmd`
@@ -200,34 +223,38 @@ Important:
 ## Best Next Step
 The best next practical step is:
 
-**Unify UI preference reset controls**
+**Move `GameView` prop-building out of `App.jsx`**
 
 Recommended version:
 - keep backend unchanged
 - frontend-only
-- combine `Reset desk layout` and the existing recent-events help reset into one small `Reset UI preferences` control
-- keep the wording simple and the placement obvious
+- keep `GameView.jsx` presentational
+- extract the long inline `GameView` prop assembly from `App.jsx` into a focused helper or hook
+- examples:
+  - `buildGameViewProps(...)`
+  - `useGameViewModel(...)`
 
 Good concrete target:
-- one reset entry point for local UI preferences
-- clear visual feedback
-- clear `aria-live` feedback
-- no extra complexity beyond the current UI system
+- make `App.jsx` shorter and easier to scan
+- keep all existing handlers and behavior the same
+- avoid moving game rules into the frontend
+- do not change backend contracts
 
 ## What Claude Code Should Check Next
 Claude Code is most useful for:
-- checking whether `Reset desk layout` is visually too strong next to `Jump to ...`
-- checking whether one combined `Reset UI preferences` control is clearer than multiple reset buttons
-- reviewing mobile layout when the guide card has multiple action buttons
-- reviewing wording for reset feedback and section labels
-- checking that `aria-live` feedback is helpful and not noisy
+- reviewing whether `GameView` is the right screen boundary
+- checking whether the next extraction should be a helper/hook instead of another UI component
+- reviewing prop shape clarity and naming consistency
+- checking for places where `App.jsx` is still doing too much presentation work
+- checking for any accessibility or focus-regression risk after future refactor-only moves
 
 ## What Codex Should Do Next
 Codex is best for:
-- implementing the unified reset control
-- reusing existing `localStorage` helpers and guide feedback patterns
+- implementing the next safe frontend-only refactor
+- moving `GameView` prop-building out of `App.jsx`
+- keeping `GameView.jsx` and the already extracted components presentation-only
 - keeping backend untouched
-- updating `App.jsx` and `index.css`
+- updating `App.jsx` and a small helper/hook file if needed
 - running `npm.cmd run lint` and `npm.cmd run build`
 
 ## What The User Should Learn
@@ -272,6 +299,12 @@ Important working style:
 - keep explanations practical and simple
 - check real files before changing anything
 - after changes, run the needed checks
+
+Current priority:
+- the frontend has already been split into many components
+- `GameView.jsx` already exists
+- the best practical next step is probably moving the long `GameView` prop-building out of `App.jsx`
+- keep backend rules untouched
 ```
 
 ## Suggested New Chat Prompt For Claude Code
@@ -280,18 +313,17 @@ Read AI_HANDOFF.md first, then inspect the real files.
 Do not rely only on the handoff; verify the current code before commenting.
 
 Focus on the current frontend state around:
-- action guide
-- jump-to-section behavior
-- desk section headers and collapse behavior
-- localStorage UI preferences
-- reset controls
+- `App.jsx` as orchestration layer
+- `GameView.jsx` as active-game screen container
+- extracted components under `frontend/src/components`
+- whether the next refactor should be a helper/hook instead of another UI component
 
 Then provide a practical review of:
-- visual hierarchy
-- wording consistency
-- mobile UX
-- accessibility / aria-live noise
-- whether a single "Reset UI preferences" control is better than separate resets
+- screen/component boundaries
+- prop shape clarity
+- readability and maintainability of `App.jsx`
+- risk of behavior regressions if prop-building is moved out of `App.jsx`
+- what to verify in browser after that refactor
 
 Keep the review practical and tied to the real files.
 ```
