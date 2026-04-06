@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 const API_BASE_URL = "http://127.0.0.1:8000";
 const SESSION_STORAGE_KEY = "monopoly_player_session";
 const RECENT_EVENTS_HELP_COLLAPSED_KEY = "monopoly_recent_events_help_collapsed";
+const DESK_COLLAPSED_SECTIONS_KEY = "monopoly_collapsed_desk_sections";
 const JAIL_FINE_AMOUNT = 50;
 const MAX_PROPERTY_LEVEL = 4;
 const JAIL_POSITION = 10;
@@ -13,6 +14,90 @@ const TOKEN_MOVE_MAX_OFFSET_PX = 26;
 const MOBILE_RECENT_EVENTS_BREAKPOINT = "(max-width: 640px)";
 const EMPTY_RECENT_EVENTS = [];
 const PLAYER_TOKEN_COLORS = ["#d94f3d", "#3b7fd4", "#3aaa5e", "#e09b2a"];
+const ACTION_GUIDE_FLASH_MS = 900;
+const ACTION_SECTION_FOCUS_SELECTOR =
+  'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+function buildGuideFocusSelector(focusKey) {
+  return focusKey ? `[data-guide-focus="${focusKey}"]:not([disabled])` : null;
+}
+
+function getActionSectionLabel(sectionKey) {
+  switch (sectionKey) {
+    case "actions":
+      return "Turn actions";
+    case "purchase":
+      return "Buy or pass";
+    case "auction":
+      return "Auction";
+    case "trade":
+      return "Trade desk";
+    case "mortgage":
+      return "Mortgage desk";
+    case "upgrade":
+      return "Upgrades desk";
+    default:
+      return "Active section";
+  }
+}
+
+function getActionFocusAnnouncementLabel(focusKey) {
+  switch (focusKey) {
+    case "pay-jail-fine":
+      return "Pay fine";
+    case "declare-bankruptcy":
+      return "Declare bankruptcy";
+    case "roll-dice":
+      return "Roll dice";
+    case "buy-property":
+      return "Buy property";
+    case "skip-purchase":
+      return "Pass on purchase";
+    case "auction-bid-input":
+      return "Your bid";
+    case "auction-place-bid":
+      return "Place bid";
+    case "auction-pass":
+      return "Pass";
+    case "accept-trade":
+      return "Accept trade";
+    case "reject-trade":
+      return "Reject trade";
+    case "trade-offer-cell":
+      return "Offer cell";
+    case "trade-target-player":
+      return "Trade with";
+    case "trade-cash-requested":
+      return "Cash requested";
+    case "propose-trade":
+      return "Propose trade";
+    case "mortgage-first":
+      return "Mortgage";
+    case "unmortgage-first":
+      return "Unmortgage";
+    case "upgrade-first":
+      return "Upgrade";
+    case "sell-upgrade-first":
+      return "Sell upgrade";
+    default:
+      return null;
+  }
+}
+
+function buildActionGuideJumpAnnouncement(sectionKey, focusKey) {
+  const sectionLabel = getActionSectionLabel(sectionKey);
+  const focusLabel = getActionFocusAnnouncementLabel(focusKey);
+
+  if (!focusLabel) {
+    return `Jumped to ${sectionLabel}.`;
+  }
+
+  return `Jumped to ${sectionLabel}. Focused ${focusLabel}.`;
+}
+
+function buildActionGuideJumpButtonLabel(sectionKey) {
+  return `Jump to ${getActionSectionLabel(sectionKey)}`;
+}
 
 function loadStoredSession() {
   if (typeof window === "undefined") {
@@ -93,6 +178,60 @@ function clearStoredRecentEventsHelpCollapsed() {
   }
 
   window.localStorage.removeItem(RECENT_EVENTS_HELP_COLLAPSED_KEY);
+}
+
+function loadStoredCollapsedDeskSections() {
+  if (typeof window === "undefined") {
+    return {};
+  }
+
+  const rawValue = window.localStorage.getItem(DESK_COLLAPSED_SECTIONS_KEY);
+
+  if (rawValue == null) {
+    return {};
+  }
+
+  try {
+    const parsedValue = JSON.parse(rawValue);
+
+    if (!parsedValue || typeof parsedValue !== "object" || Array.isArray(parsedValue)) {
+      window.localStorage.removeItem(DESK_COLLAPSED_SECTIONS_KEY);
+      return {};
+    }
+
+    return Object.fromEntries(
+      Object.entries(parsedValue).filter(
+        ([sectionKey, isCollapsed]) => typeof sectionKey === "string" && typeof isCollapsed === "boolean",
+      ),
+    );
+  } catch {
+    window.localStorage.removeItem(DESK_COLLAPSED_SECTIONS_KEY);
+    return {};
+  }
+}
+
+function saveStoredCollapsedDeskSections(collapsedSections) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  if (Object.keys(collapsedSections).length === 0) {
+    clearStoredCollapsedDeskSections();
+    return;
+  }
+
+  window.localStorage.setItem(
+    DESK_COLLAPSED_SECTIONS_KEY,
+    JSON.stringify(collapsedSections),
+  );
+}
+
+function clearStoredCollapsedDeskSections() {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  window.localStorage.removeItem(DESK_COLLAPSED_SECTIONS_KEY);
 }
 
 function getDefaultRecentEventsHelpCollapsed() {
@@ -244,6 +383,40 @@ function BankruptcySummaryCard({ summary, title }) {
         <p>{mortgageLine}</p>
       </div>
     </section>
+  );
+}
+
+function DeskSectionHeader({
+  title,
+  sectionId,
+  statusLabel,
+  statusTone,
+  note,
+  isCollapsible = false,
+  isCollapsed = false,
+  onToggleCollapse,
+}) {
+  return (
+    <div className="desk-card-header">
+      <div className="desk-card-title-row">
+        <h3>{title}</h3>
+        <div className="desk-card-header-actions">
+          <span className={`desk-card-status is-${statusTone}`}>{statusLabel}</span>
+          {isCollapsible && (
+            <button
+              type="button"
+              className="desk-card-toggle"
+              aria-expanded={!isCollapsed}
+              aria-controls={sectionId}
+              onClick={onToggleCollapse}
+            >
+              {isCollapsed ? "Show details" : "Hide details"}
+            </button>
+          )}
+        </div>
+      </div>
+      {note && (!isCollapsible || !isCollapsed) && <p className="desk-card-note">{note}</p>}
+    </div>
   );
 }
 
@@ -1059,6 +1232,8 @@ function App() {
   const [tradeCashAmount, setTradeCashAmount] = useState("0");
   const [auctionBidAmount, setAuctionBidAmount] = useState("1");
   const [movingTokenEffects, setMovingTokenEffects] = useState({});
+  const [actionGuideFlash, setActionGuideFlash] = useState({ sectionKey: null, pulseId: 0 });
+  const [collapsedDeskSections, setCollapsedDeskSections] = useState(loadStoredCollapsedDeskSections);
   const recentEventsRoomCodeRef = useRef(null);
   const highestSeenRecentEventIdRef = useRef(0);
   const recentEventHighlightTimeoutsRef = useRef({});
@@ -1066,6 +1241,10 @@ function App() {
   const previousPositionsRef = useRef({});
   const boardCellRefs = useRef({});
   const playerCardRefs = useRef({});
+  const actionSectionRefs = useRef({});
+  const actionGuideLiveStatusRef = useRef(null);
+  const actionGuideLiveAnnouncementFrameRef = useRef(null);
+  const actionGuideFlashTimeoutRef = useRef(null);
   const currentRoomCode = currentRoom?.room_code ?? null;
   const isLobbyOpen = currentRoom?.status === "lobby";
   const isGameOpen = currentRoom?.status === "in_game";
@@ -1087,6 +1266,7 @@ function App() {
     currentRoom?.players.find((player) => player.player_id === winnerId) ?? null;
   const currentPlayer =
     currentRoom?.players.find((player) => player.player_id === playerId) ?? null;
+  const hasStoredCollapsedDeskPreference = Object.keys(collapsedDeskSections).length > 0;
   const isEliminated = Boolean(currentRoom && isGameOpen && playerId && !currentPlayer);
   const isHost = currentPlayer?.is_host ?? false;
   const canStartGame =
@@ -1652,6 +1832,18 @@ function App() {
 
           return true;
         });
+  const ownedBuyableCells =
+    currentPlayer == null
+      ? []
+      : boardCells.filter(
+          (cell) => cell.price && propertyOwners[cell.index] === currentPlayer.player_id,
+        );
+  const ownedStandardProperties =
+    currentPlayer == null
+      ? []
+      : boardCells.filter(
+          (cell) => cell.cell_type === "property" && propertyOwners[cell.index] === currentPlayer.player_id,
+        );
   const canProposeTrade = canUsePreRollDesk || canManageDebtRecovery;
   const canAcceptTrade =
     isGameOpen &&
@@ -1766,6 +1958,372 @@ function App() {
       }
   }
 
+  function getDeskLockReason(deskLabel) {
+    if (pendingPurchase) {
+      return `${deskLabel} unlocks after ${
+        pendingPurchasePlayer?.nickname ?? "the active player"
+      } resolves the property decision.`;
+    }
+
+    if (pendingTrade) {
+      return `${deskLabel} unlocks after the current trade offer is resolved.`;
+    }
+
+    if (pendingBankruptcy && !canManageDebtRecovery) {
+      return `${deskLabel} is locked while another player handles debt recovery.`;
+    }
+
+    if (currentTurnPlayerId !== playerId) {
+      return `${deskLabel} opens on your turn, before you roll.`;
+    }
+
+    if (!(currentRoom?.game?.turn.can_roll ?? false)) {
+      return `${deskLabel} is only available before you roll.`;
+    }
+
+    return `${deskLabel} is not available right now.`;
+  }
+
+  function isDeskCollapsible(statusTone) {
+    return statusTone === "locked" || statusTone === "empty";
+  }
+
+  function isDeskCollapsed(sectionKey, statusTone) {
+    if (!isDeskCollapsible(statusTone)) {
+      return false;
+    }
+
+    return collapsedDeskSections[sectionKey] ?? true;
+  }
+
+  function toggleDeskCollapsed(sectionKey) {
+    setCollapsedDeskSections((current) => {
+      const nextValue = !(current[sectionKey] ?? true);
+      let nextState;
+
+      if (nextValue) {
+        const { [sectionKey]: _ignoredSection, ...remainingSections } = current;
+        nextState = remainingSections;
+      } else {
+        nextState = {
+          ...current,
+          [sectionKey]: false,
+        };
+      }
+
+      saveStoredCollapsedDeskSections(nextState);
+      return nextState;
+    });
+  }
+
+  function handleResetDeskLayout() {
+    clearStoredCollapsedDeskSections();
+    setCollapsedDeskSections({});
+    setStatus("Desk layout restored to default.");
+    queueActionGuideAnnouncement("Desk layout restored to default.");
+  }
+
+  const showTradeDesk = !pendingAuction && (pendingTrade || ownedBuyableCells.length > 0);
+  const canShowTradeForm =
+    !pendingTrade && canProposeTrade && tradeableCells.length > 0 && tradeTargets.length > 0;
+  const tradeDeskState = pendingTrade
+    ? {
+        statusLabel: canAcceptTrade ? "Action needed" : "Waiting",
+        statusTone: canAcceptTrade ? "action" : "waiting",
+        note: canAcceptTrade
+          ? "A trade offer is waiting for your response."
+          : pendingTrade.proposer_id === playerId
+            ? "Your trade offer is waiting for the other player's answer."
+            : "A trade offer is currently blocking new trade actions.",
+      }
+    : canShowTradeForm
+      ? {
+          statusLabel: "Open",
+          statusTone: "open",
+          note: canManageDebtRecovery
+            ? "You can prepare a cash-for-property offer right now to help cover the debt."
+            : "You can prepare a cash-for-property offer before rolling.",
+        }
+      : !canProposeTrade
+        ? {
+            statusLabel: "Locked",
+            statusTone: "locked",
+            note: getDeskLockReason("Trade desk"),
+          }
+        : tradeTargets.length === 0
+          ? {
+              statusLabel: "Empty",
+              statusTone: "empty",
+              note: "No other player is available to trade with right now.",
+            }
+          : {
+              statusLabel: "Empty",
+              statusTone: "empty",
+              note: "No cells to trade. Mortgaged or upgraded color groups are excluded.",
+            };
+
+  const showMortgageDesk = !pendingAuction && ownedBuyableCells.length > 0;
+  const showMortgageLists =
+    mortgageableCells.length > 0 || (unmortgageableCells.length > 0 && !canManageDebtRecovery);
+  const mortgageDeskState =
+    canManageDebtRecovery && mortgageableCells.length > 0
+      ? {
+          statusLabel: "Action needed",
+          statusTone: "action",
+          note: "Use mortgages now if you need quick cash to stay in the game.",
+        }
+      : canManageMortgages && showMortgageLists
+        ? {
+            statusLabel: "Open",
+            statusTone: "open",
+            note: canManageDebtRecovery
+              ? "You can mortgage properties right now to raise cash."
+              : "You can mortgage or buy back properties before rolling.",
+          }
+        : canManageDebtRecovery
+          ? {
+              statusLabel: "Empty",
+              statusTone: "empty",
+              note:
+                unmortgageableCells.length > 0
+                  ? "Buy-backs are paused during debt recovery. Only new mortgages can help right now."
+                  : "No mortgage options are available from your current properties.",
+            }
+          : canManageMortgages
+            ? {
+                statusLabel: "Empty",
+                statusTone: "empty",
+                note: "No mortgage changes are available. Sell upgrades in a color group before mortgaging it.",
+              }
+            : {
+                statusLabel: "Locked",
+                statusTone: "locked",
+                note: getDeskLockReason("Mortgage desk"),
+              };
+
+  const showUpgradeDesk = !pendingAuction && ownedStandardProperties.length > 0;
+  const showUpgradeLists =
+    (!canManageDebtRecovery && upgradeableProperties.length > 0) || sellableProperties.length > 0;
+  const upgradeDeskState =
+    canManageDebtRecovery && sellableProperties.length > 0
+      ? {
+          statusLabel: "Action needed",
+          statusTone: "action",
+          note: "Sell upgrades now if you need cash to avoid bankruptcy.",
+        }
+      : !canManageDebtRecovery && canUpgradeProperties && showUpgradeLists
+        ? {
+            statusLabel: "Open",
+            statusTone: "open",
+            note: "You can build or sell upgrades before rolling.",
+          }
+        : canManageDebtRecovery
+          ? {
+              statusLabel: "Empty",
+              statusTone: "empty",
+              note: "No upgrades are available to sell from your current properties.",
+            }
+          : canUpgradeProperties
+            ? {
+                statusLabel: "Empty",
+                statusTone: "empty",
+                note: "Nothing to build or sell. Building needs a full unmortgaged color set; selling needs an existing upgrade.",
+              }
+            : {
+                statusLabel: "Locked",
+                statusTone: "locked",
+                note: getDeskLockReason("Upgrades desk"),
+              };
+  const tradeDeskCollapsed = isDeskCollapsed("trade", tradeDeskState.statusTone);
+  const mortgageDeskCollapsed = isDeskCollapsed("mortgage", mortgageDeskState.statusTone);
+  const upgradeDeskCollapsed = isDeskCollapsed("upgrade", upgradeDeskState.statusTone);
+
+  function setActionSectionRef(sectionKey, element) {
+    if (element) {
+      actionSectionRefs.current[sectionKey] = element;
+    } else {
+      delete actionSectionRefs.current[sectionKey];
+    }
+  }
+
+  function triggerActionGuideFlash(sectionKey) {
+    if (!sectionKey) {
+      return;
+    }
+
+    if (actionGuideFlashTimeoutRef.current != null) {
+      window.clearTimeout(actionGuideFlashTimeoutRef.current);
+      actionGuideFlashTimeoutRef.current = null;
+    }
+
+    setActionGuideFlash((current) => ({
+      sectionKey,
+      pulseId: current.pulseId + 1,
+    }));
+
+    actionGuideFlashTimeoutRef.current = window.setTimeout(() => {
+      setActionGuideFlash((current) =>
+        current.sectionKey === sectionKey
+          ? {
+              ...current,
+              sectionKey: null,
+            }
+          : current,
+      );
+      actionGuideFlashTimeoutRef.current = null;
+    }, ACTION_GUIDE_FLASH_MS);
+  }
+
+  function getActionGuideFlashClassName(sectionKey) {
+    return actionGuideFlash.sectionKey === sectionKey ? "is-guide-flash" : "";
+  }
+
+  function getActionGuideFlashStyle(sectionKey) {
+    if (actionGuideFlash.sectionKey !== sectionKey) {
+      return undefined;
+    }
+
+    return {
+      "--guide-target-flash-name":
+        actionGuideFlash.pulseId % 2 === 0 ? "guide-target-flash-a" : "guide-target-flash-b",
+    };
+  }
+
+  function queueActionGuideAnnouncement(message) {
+    if (!actionGuideLiveStatusRef.current || !message) {
+      return;
+    }
+
+    if (actionGuideLiveAnnouncementFrameRef.current != null) {
+      window.cancelAnimationFrame(actionGuideLiveAnnouncementFrameRef.current);
+      actionGuideLiveAnnouncementFrameRef.current = null;
+    }
+
+    actionGuideLiveStatusRef.current.textContent = "";
+    actionGuideLiveAnnouncementFrameRef.current = window.requestAnimationFrame(() => {
+      if (actionGuideLiveStatusRef.current) {
+        actionGuideLiveStatusRef.current.textContent = message;
+      }
+      actionGuideLiveAnnouncementFrameRef.current = null;
+    });
+  }
+
+  function scrollToActionSection(sectionKey, focusKey = null) {
+    if (!sectionKey) {
+      return;
+    }
+
+    const section = actionSectionRefs.current[sectionKey];
+
+    if (!section) {
+      return;
+    }
+
+    section.scrollIntoView({
+      behavior: "smooth",
+      block: "start",
+      inline: "nearest",
+    });
+
+    const preferredFocusable =
+      buildGuideFocusSelector(focusKey) == null
+        ? null
+        : section.querySelector(buildGuideFocusSelector(focusKey));
+    const firstFocusable = preferredFocusable ?? section.querySelector(ACTION_SECTION_FOCUS_SELECTOR);
+    const resolvedFocusKey = firstFocusable?.getAttribute("data-guide-focus") ?? null;
+    const announcement = buildActionGuideJumpAnnouncement(sectionKey, resolvedFocusKey);
+
+    triggerActionGuideFlash(sectionKey);
+
+    window.requestAnimationFrame(() => {
+      if (firstFocusable) {
+        firstFocusable.focus({ preventScroll: true });
+      }
+      queueActionGuideAnnouncement(announcement);
+    });
+  }
+
+  function getPreRollActionSectionKey() {
+    if (!pendingAuction && (upgradeableProperties.length > 0 || sellableProperties.length > 0)) {
+      return "upgrade";
+    }
+
+    if (
+      !pendingAuction &&
+      (mortgageableCells.length > 0 || (unmortgageableCells.length > 0 && !canManageDebtRecovery))
+    ) {
+      return "mortgage";
+    }
+
+    if (
+      !pendingAuction &&
+      (pendingTrade || (canProposeTrade && tradeableCells.length > 0 && tradeTargets.length > 0))
+    ) {
+      return "trade";
+    }
+
+    return "actions";
+  }
+
+  function getPreRollActionFocusKey() {
+    if (!pendingAuction && upgradeableProperties.length > 0) {
+      return "upgrade-first";
+    }
+
+    if (!pendingAuction && sellableProperties.length > 0) {
+      return "sell-upgrade-first";
+    }
+
+    if (!pendingAuction && mortgageableCells.length > 0) {
+      return "mortgage-first";
+    }
+
+    if (!pendingAuction && unmortgageableCells.length > 0 && !canManageDebtRecovery) {
+      return "unmortgage-first";
+    }
+
+    if (!pendingAuction && canProposeTrade && tradeableCells.length > 0 && tradeTargets.length > 0) {
+      return "trade-offer-cell";
+    }
+
+    return "roll-dice";
+  }
+
+  function getDebtRecoveryActionSectionKey() {
+    if (!pendingAuction && mortgageableCells.length > 0) {
+      return "mortgage";
+    }
+
+    if (!pendingAuction && sellableProperties.length > 0) {
+      return "upgrade";
+    }
+
+    if (
+      !pendingAuction &&
+      (pendingTrade || (canProposeTrade && tradeableCells.length > 0 && tradeTargets.length > 0))
+    ) {
+      return "trade";
+    }
+
+    return "actions";
+  }
+
+  function getDebtRecoveryActionFocusKey() {
+    if (!pendingAuction && mortgageableCells.length > 0) {
+      return "mortgage-first";
+    }
+
+    if (!pendingAuction && sellableProperties.length > 0) {
+      return "sell-upgrade-first";
+    }
+
+    if (!pendingAuction && canProposeTrade && tradeableCells.length > 0 && tradeTargets.length > 0) {
+      return "trade-offer-cell";
+    }
+
+    return "declare-bankruptcy";
+  }
+
   const actionGuide = (() => {
     const activePlayerName = currentTurnPlayer?.nickname ?? "the active player";
     const canPrepareTrade = canProposeTrade && tradeableCells.length > 0 && tradeTargets.length > 0;
@@ -1799,15 +2357,17 @@ function App() {
     }
 
     if (canResolvePurchase && pendingPurchaseCell) {
-      return {
-        tone: "urgent",
-        eyebrow: "Decision needed",
-        title: "Decide on this property",
-        summary: `You landed on ${pendingPurchaseCell.name}. Buy it for $${pendingPurchase?.price ?? 0} or pass it to the auction flow.`,
-        steps: [
-          "Use Buy property if you want to keep this cell.",
-          "Use Pass on purchase if you want the table to move to auction.",
+        return {
+          tone: "urgent",
+          eyebrow: "Decision needed",
+          title: "Buy or pass",
+          summary: `You landed on ${pendingPurchaseCell.name}. Buy it for $${pendingPurchase?.price ?? 0} or pass it to the auction flow.`,
+          steps: [
+            "Use Buy property if you want to keep this cell.",
+            "Use Pass on purchase if you want the table to move to auction.",
         ],
+        focusKey: "buy-property",
+        targetKey: "actions",
       };
     }
 
@@ -1821,6 +2381,8 @@ function App() {
           "The turn continues after the purchase is resolved.",
           "You can inspect the board, players, and recent events while you wait.",
         ],
+        focusKey: null,
+        targetKey: "purchase",
       };
     }
 
@@ -1831,16 +2393,18 @@ function App() {
         return {
           tone: "urgent",
           eyebrow: "Auction turn",
-          title: `Bid or pass on ${auctionCellName}`,
+          title: "Auction",
           summary: canAffordAuctionBid
-            ? `You can bid at least $${minimumAuctionBid}, or pass and leave the auction.`
-            : `The minimum bid is $${minimumAuctionBid}, but you do not have enough cash to place it.`,
+            ? `${auctionCellName} is in auction. You can bid at least $${minimumAuctionBid}, or pass and leave the auction.`
+            : `${auctionCellName} is in auction. The minimum bid is $${minimumAuctionBid}, but you do not have enough cash to place it.`,
           steps: canAffordAuctionBid
             ? [
                 `Enter a bid of at least $${minimumAuctionBid} if you want to stay in the auction.`,
                 "Use Pass if you want to leave the auction now.",
               ]
             : ["Use Pass. It is the only valid move you can make right now."],
+          focusKey: canAffordAuctionBid ? "auction-bid-input" : "auction-pass",
+          targetKey: "auction",
         };
       }
 
@@ -1853,6 +2417,8 @@ function App() {
           "The turn resumes after the auction finishes.",
           "You can review the current bid and highest bidder in the auction card below.",
         ],
+        focusKey: null,
+        targetKey: "auction",
       };
     }
 
@@ -1869,6 +2435,8 @@ function App() {
             "Use Accept trade if the deal looks good to you.",
             "Use Reject trade if you do not want this deal.",
           ],
+          focusKey: "accept-trade",
+          targetKey: "trade",
         };
       }
 
@@ -1882,6 +2450,8 @@ function App() {
             "Wait for the response if you still want the deal.",
             "Use Cancel offer if you want to stop waiting.",
           ],
+          focusKey: "reject-trade",
+          targetKey: "trade",
         };
       }
 
@@ -1894,6 +2464,8 @@ function App() {
           "The turn continues after the trade is accepted, rejected, or cancelled.",
           "You can still inspect the property and player cards while you wait.",
         ],
+        focusKey: null,
+        targetKey: "trade",
       };
     }
 
@@ -1917,6 +2489,8 @@ function App() {
           title: "Raise cash or go bankrupt",
           summary: `You owe ${creditorLabel} $${pendingBankruptcy.amount_owed}. Clear the debt to keep playing.`,
           steps,
+          focusKey: getDebtRecoveryActionFocusKey(),
+          targetKey: getDebtRecoveryActionSectionKey(),
         };
       }
 
@@ -1929,6 +2503,8 @@ function App() {
           "The match continues after the debt is covered or bankruptcy is declared.",
           "You can inspect their properties and recent events while you wait.",
         ],
+        focusKey: null,
+        targetKey: null,
       };
     }
 
@@ -1955,6 +2531,8 @@ function App() {
               ? "This is your last free attempt. If you miss doubles, the fine is forced and you move."
               : "You can try to roll doubles for free, or pay before you roll if you have enough cash.",
           steps: jailSteps,
+          focusKey: "roll-dice",
+          targetKey: "actions",
         };
       }
 
@@ -1978,6 +2556,8 @@ function App() {
             currentPlayerDoublesStreak > 0
               ? `Careful: your doubles streak is ${currentPlayerDoublesStreak}/3, so one more doubles result sends you to jail.`
               : null,
+          focusKey: getPreRollActionFocusKey(),
+          targetKey: getPreRollActionSectionKey(),
         };
       }
 
@@ -1987,6 +2567,8 @@ function App() {
         title: "Turn state updated",
         summary: "Your turn is between actions right now. Follow the visible prompt or action card below.",
         steps: ["Check the active purchase, auction, trade, or debt section if one is open."],
+        focusKey: "roll-dice",
+        targetKey: "actions",
       };
     }
 
@@ -1999,6 +2581,8 @@ function App() {
         "You can inspect cells, players, and recent events while you wait.",
         "Watch the center cards for the next prompt that opens to you.",
       ],
+      focusKey: null,
+      targetKey: null,
     };
   })();
 
@@ -2013,6 +2597,19 @@ function App() {
       setSelectedTradeTargetId(nextTradeTargets[0]?.player_id ?? "");
     }
   }, [selectedTradeTargetId, currentPlayer, currentRoom]);
+
+  useEffect(() => {
+    return () => {
+      if (actionGuideLiveAnnouncementFrameRef.current != null) {
+        window.cancelAnimationFrame(actionGuideLiveAnnouncementFrameRef.current);
+        actionGuideLiveAnnouncementFrameRef.current = null;
+      }
+      if (actionGuideFlashTimeoutRef.current != null) {
+        window.clearTimeout(actionGuideFlashTimeoutRef.current);
+        actionGuideFlashTimeoutRef.current = null;
+      }
+    };
+  }, []);
 
   useEffect(() => {
     previousPositionsRef.current = {};
@@ -3319,6 +3916,12 @@ function App() {
   return (
     <main className={`app-shell${isGameOpen || isEliminated ? " is-game" : ""}`}>
       <section className="panel">
+        <div
+          ref={actionGuideLiveStatusRef}
+          className="sr-only"
+          aria-live="polite"
+          aria-atomic="true"
+        />
         <p className="eyebrow">Day 1 - React + FastAPI</p>
         <h1>Monopoly Online</h1>
         <p className="lead">
@@ -3654,6 +4257,30 @@ function App() {
                     <p className="action-guide-eyebrow">{actionGuide.eyebrow}</p>
                     <h3>{actionGuide.title}</h3>
                     <p className="action-guide-summary">{actionGuide.summary}</p>
+                    {(actionGuide.targetKey || hasStoredCollapsedDeskPreference) && (
+                      <div className="action-guide-actions">
+                        {actionGuide.targetKey && (
+                          <button
+                            type="button"
+                            className="action-guide-jump"
+                            onClick={() =>
+                              scrollToActionSection(actionGuide.targetKey, actionGuide.focusKey)
+                            }
+                          >
+                            {buildActionGuideJumpButtonLabel(actionGuide.targetKey)}
+                          </button>
+                        )}
+                        {hasStoredCollapsedDeskPreference && (
+                          <button
+                            type="button"
+                            className="action-guide-reset"
+                            onClick={handleResetDeskLayout}
+                          >
+                            Reset desk layout
+                          </button>
+                        )}
+                      </div>
+                    )}
                     <ul className="action-guide-list">
                       {actionGuide.steps.map((step) => (
                         <li key={step}>{step}</li>
@@ -3993,7 +4620,13 @@ function App() {
                     />
                   )}
 
-                  <div className="room-actions board-center-actions">
+                  <div
+                    ref={(element) => setActionSectionRef("actions", element)}
+                    className={`room-actions board-center-actions board-center-focus-target ${
+                      actionGuide.targetKey === "actions" ? "is-guide-target" : ""
+                    } ${getActionGuideFlashClassName("actions")}`}
+                    style={getActionGuideFlashStyle("actions")}
+                  >
                     {pendingPurchaseCell && !canResolvePurchase && (
                       <p className="purchase-note">
                         Waiting for {pendingPurchasePlayer?.nickname ?? "the active player"} to buy or
@@ -4063,6 +4696,7 @@ function App() {
                       <button
                         type="button"
                         className="buy-button"
+                        data-guide-focus="pay-jail-fine"
                         onClick={handlePayJailFine}
                         disabled={isSubmitting || !canAffordJailFine}
                       >
@@ -4078,6 +4712,7 @@ function App() {
                       <button
                         type="button"
                         className="pass-button"
+                        data-guide-focus="declare-bankruptcy"
                         onClick={handleDeclareBankruptcy}
                         disabled={isSubmitting}
                       >
@@ -4092,6 +4727,7 @@ function App() {
                     <button
                       type="button"
                       className="start-button"
+                      data-guide-focus="roll-dice"
                       onClick={handleRollDice}
                       disabled={isSubmitting || !canRollDice}
                     >
@@ -4102,6 +4738,7 @@ function App() {
                         <button
                           type="button"
                           className="buy-button"
+                          data-guide-focus="buy-property"
                           onClick={handleBuyProperty}
                           disabled={isSubmitting}
                         >
@@ -4110,6 +4747,7 @@ function App() {
                         <button
                           type="button"
                           className="pass-button"
+                          data-guide-focus="skip-purchase"
                           onClick={handleSkipPurchase}
                           disabled={isSubmitting}
                         >
@@ -4128,7 +4766,13 @@ function App() {
                   </div>
 
                   {pendingPurchaseCell && (
-                    <section className="purchase-card board-center-section">
+                    <section
+                      ref={(element) => setActionSectionRef("purchase", element)}
+                      className={`purchase-card board-center-section board-center-focus-target ${
+                        actionGuide.targetKey === "purchase" ? "is-guide-target" : ""
+                      } ${getActionGuideFlashClassName("purchase")}`}
+                      style={getActionGuideFlashStyle("purchase")}
+                    >
                       <h3>Buy or pass</h3>
                       <p>
                         {pendingPurchasePlayer?.nickname ?? "A player"} can buy{" "}
@@ -4142,7 +4786,13 @@ function App() {
                   )}
 
                   {pendingAuction && (
-                    <section className="trade-card board-center-section">
+                    <section
+                      ref={(element) => setActionSectionRef("auction", element)}
+                      className={`trade-card board-center-section board-center-focus-target ${
+                        actionGuide.targetKey === "auction" ? "is-guide-target" : ""
+                      } ${getActionGuideFlashClassName("auction")}`}
+                      style={getActionGuideFlashStyle("auction")}
+                    >
                       <h3>Auction</h3>
                       <p>
                         <strong>{pendingAuctionCell?.name ?? pendingAuction.cell_name}</strong> is
@@ -4182,6 +4832,7 @@ function App() {
                               <input
                                 className="trade-input"
                                 type="number"
+                                data-guide-focus="auction-bid-input"
                                 min={minimumAuctionBid}
                                 step="1"
                                 value={auctionBidAmount}
@@ -4193,6 +4844,7 @@ function App() {
                             <button
                               type="button"
                               className="trade-button accept-button"
+                              data-guide-focus="auction-place-bid"
                               onClick={handleBidInAuction}
                               disabled={isSubmitting || !canAffordAuctionBid}
                             >
@@ -4201,6 +4853,7 @@ function App() {
                             <button
                               type="button"
                               className="trade-button reject-button"
+                              data-guide-focus="auction-pass"
                               onClick={handlePassAuction}
                               disabled={isSubmitting || !canPassAuction}
                             >
@@ -4226,12 +4879,26 @@ function App() {
                     </section>
                   )}
 
-                  {!pendingAuction &&
-                    (pendingTrade ||
-                      (canProposeTrade && tradeableCells.length > 0 && tradeTargets.length > 0)) && (
-                    <section className="trade-card board-center-section">
-                      <h3>Trade desk</h3>
-                      {pendingTrade ? (
+                  {showTradeDesk && (
+                    <section
+                      ref={(element) => setActionSectionRef("trade", element)}
+                      id="desk-trade"
+                      className={`trade-card board-center-section board-center-focus-target ${
+                        actionGuide.targetKey === "trade" ? "is-guide-target" : ""
+                      } ${getActionGuideFlashClassName("trade")}`}
+                      style={getActionGuideFlashStyle("trade")}
+                    >
+                      <DeskSectionHeader
+                        title="Trade desk"
+                        sectionId="desk-trade"
+                        statusLabel={tradeDeskState.statusLabel}
+                        statusTone={tradeDeskState.statusTone}
+                        note={tradeDeskState.note}
+                        isCollapsible={isDeskCollapsible(tradeDeskState.statusTone)}
+                        isCollapsed={tradeDeskCollapsed}
+                        onToggleCollapse={() => toggleDeskCollapsed("trade")}
+                      />
+                      {!tradeDeskCollapsed && (pendingTrade ? (
                         <>
                           <p>
                             <strong>{pendingTradeProposer?.nickname ?? "A player"}</strong> offers{" "}
@@ -4250,6 +4917,7 @@ function App() {
                               <button
                                 type="button"
                                 className="trade-button accept-button"
+                                data-guide-focus="accept-trade"
                                 onClick={() => handleRespondTrade(true)}
                                 disabled={isSubmitting}
                               >
@@ -4260,6 +4928,7 @@ function App() {
                               <button
                                 type="button"
                                 className="trade-button reject-button"
+                                data-guide-focus="reject-trade"
                                 onClick={() => handleRespondTrade(false)}
                                 disabled={isSubmitting}
                               >
@@ -4274,7 +4943,7 @@ function App() {
                             </p>
                           )}
                         </>
-                      ) : (
+                      ) : canShowTradeForm ? (
                         <>
                           <p>
                             {canManageDebtRecovery
@@ -4287,6 +4956,7 @@ function App() {
                               <span>Offer cell</span>
                               <select
                                 className="trade-select"
+                                data-guide-focus="trade-offer-cell"
                                 value={selectedTradePosition}
                                 onChange={(event) => setSelectedTradePosition(event.target.value)}
                               >
@@ -4301,6 +4971,7 @@ function App() {
                               <span>Trade with</span>
                               <select
                                 className="trade-select"
+                                data-guide-focus="trade-target-player"
                                 value={selectedTradeTargetId}
                                 onChange={(event) => setSelectedTradeTargetId(event.target.value)}
                               >
@@ -4316,6 +4987,7 @@ function App() {
                               <input
                                 className="trade-input"
                                 type="number"
+                                data-guide-focus="trade-cash-requested"
                                 min="0"
                                 step="1"
                                 value={tradeCashAmount}
@@ -4325,6 +4997,7 @@ function App() {
                             <button
                               type="button"
                               className="trade-button"
+                              data-guide-focus="propose-trade"
                               onClick={handleProposeTrade}
                               disabled={
                                 isSubmitting ||
@@ -4336,32 +5009,45 @@ function App() {
                               Propose trade
                             </button>
                           </div>
-                          {!canProposeTrade && (
-                            <p className="trade-note">
-                              Trades can only be proposed at the start of your own turn, before you
-                              roll.
-                            </p>
-                          )}
                         </>
-                      )}
+                      ) : (
+                        <p className="trade-note">{tradeDeskState.note}</p>
+                      ))}
                     </section>
                   )}
 
-                  {!pendingAuction &&
-                    (mortgageableCells.length > 0 || (unmortgageableCells.length > 0 && !canManageDebtRecovery)) && (
-                    <section className="mortgage-card board-center-section">
-                      <h3>Mortgage desk</h3>
-                      <p>
-                        {canManageDebtRecovery
-                          ? "Raise cash to escape bankruptcy. Mortgages add cash immediately and stop rent until you buy the property back."
-                          : "Use mortgages to raise cash before rolling. Mortgaged cells stop charging rent until you buy them back."}
-                      </p>
+                  {showMortgageDesk && (
+                    <section
+                      ref={(element) => setActionSectionRef("mortgage", element)}
+                      id="desk-mortgage"
+                      className={`mortgage-card board-center-section board-center-focus-target ${
+                        actionGuide.targetKey === "mortgage" ? "is-guide-target" : ""
+                      } ${getActionGuideFlashClassName("mortgage")}`}
+                      style={getActionGuideFlashStyle("mortgage")}
+                    >
+                      <DeskSectionHeader
+                        title="Mortgage desk"
+                        sectionId="desk-mortgage"
+                        statusLabel={mortgageDeskState.statusLabel}
+                        statusTone={mortgageDeskState.statusTone}
+                        note={mortgageDeskState.note}
+                        isCollapsible={isDeskCollapsible(mortgageDeskState.statusTone)}
+                        isCollapsed={mortgageDeskCollapsed}
+                        onToggleCollapse={() => toggleDeskCollapsed("mortgage")}
+                      />
+                      {!mortgageDeskCollapsed && (showMortgageLists ? (
+                        <>
+                          <p>
+                            {canManageDebtRecovery
+                              ? "Raise cash to escape bankruptcy. Mortgages add cash immediately and stop rent until you buy the property back."
+                              : "Use mortgages to raise cash before rolling. Mortgaged cells stop charging rent until you buy them back."}
+                          </p>
 
-                      {mortgageableCells.length > 0 && (
+                          {mortgageableCells.length > 0 && (
                         <div className="mortgage-group">
                           <h4>Available to mortgage</h4>
                           <div className="mortgage-list">
-                            {mortgageableCells.map((cell) => {
+                            {mortgageableCells.map((cell, index) => {
                               const mortgageValue = getMortgageValue(cell);
                               return (
                                 <article key={cell.index} className="mortgage-option">
@@ -4374,6 +5060,7 @@ function App() {
                                   <button
                                     type="button"
                                     className="mortgage-button"
+                                    data-guide-focus={index === 0 ? "mortgage-first" : undefined}
                                     onClick={() => handleMortgageProperty(cell.index)}
                                     disabled={isSubmitting || !canManageMortgages}
                                   >
@@ -4384,13 +5071,13 @@ function App() {
                             })}
                           </div>
                         </div>
-                      )}
+                          )}
 
-                      {unmortgageableCells.length > 0 && !canManageDebtRecovery && (
+                          {unmortgageableCells.length > 0 && !canManageDebtRecovery && (
                         <div className="mortgage-group">
                           <h4>Currently mortgaged</h4>
                           <div className="mortgage-list">
-                            {unmortgageableCells.map((cell) => {
+                            {unmortgageableCells.map((cell, index) => {
                               const unmortgageCost = getUnmortgageCost(cell);
                               return (
                                 <article key={cell.index} className="mortgage-option is-mortgaged">
@@ -4403,6 +5090,7 @@ function App() {
                                   <button
                                     type="button"
                                     className="unmortgage-button"
+                                    data-guide-focus={index === 0 ? "unmortgage-first" : undefined}
                                     onClick={() => handleUnmortgageProperty(cell.index)}
                                     disabled={isSubmitting || !canUnmortgageProperties}
                                   >
@@ -4413,30 +5101,51 @@ function App() {
                             })}
                           </div>
                         </div>
-                      )}
+                          )}
 
-                      {!canManageMortgages && !canManageDebtRecovery && (
-                        <p className="mortgage-note">
-                          Mortgages can only be managed at the start of your turn, before you roll.
-                        </p>
-                      )}
+                          {!canManageMortgages && !canManageDebtRecovery && (
+                            <p className="mortgage-note">
+                              Mortgages can only be managed at the start of your turn, before you roll.
+                            </p>
+                          )}
+                        </>
+                      ) : (
+                        <p className="mortgage-note">{mortgageDeskState.note}</p>
+                      ))}
                     </section>
                   )}
 
-                  {!pendingAuction &&
-                    ((!canManageDebtRecovery && upgradeableProperties.length > 0) || sellableProperties.length > 0) && (
-                    <section className="upgrade-card board-center-section">
-                      <h3>Property management</h3>
-                      <p>
-                        {canManageDebtRecovery
-                          ? "Sell upgrades to raise cash and escape bankruptcy. Building is locked until your debts are cleared."
-                          : "Build or sell upgrades before rolling. This is a simplified upgrade system."}
-                      </p>
-                      {!canManageDebtRecovery && upgradeableProperties.length > 0 && (
+                  {showUpgradeDesk && (
+                    <section
+                      ref={(element) => setActionSectionRef("upgrade", element)}
+                      id="desk-upgrade"
+                      className={`upgrade-card board-center-section board-center-focus-target ${
+                        actionGuide.targetKey === "upgrade" ? "is-guide-target" : ""
+                      } ${getActionGuideFlashClassName("upgrade")}`}
+                      style={getActionGuideFlashStyle("upgrade")}
+                    >
+                      <DeskSectionHeader
+                        title="Upgrades desk"
+                        sectionId="desk-upgrade"
+                        statusLabel={upgradeDeskState.statusLabel}
+                        statusTone={upgradeDeskState.statusTone}
+                        note={upgradeDeskState.note}
+                        isCollapsible={isDeskCollapsible(upgradeDeskState.statusTone)}
+                        isCollapsed={upgradeDeskCollapsed}
+                        onToggleCollapse={() => toggleDeskCollapsed("upgrade")}
+                      />
+                      {!upgradeDeskCollapsed && (showUpgradeLists ? (
+                        <>
+                          <p>
+                            {canManageDebtRecovery
+                              ? "Sell upgrades to raise cash and escape bankruptcy. Building is locked until your debts are cleared."
+                              : "Build or sell upgrades before rolling. This is a simplified upgrade system."}
+                          </p>
+                          {!canManageDebtRecovery && upgradeableProperties.length > 0 && (
                         <div className="upgrade-group">
                           <h4>Build upgrades</h4>
                           <div className="upgrade-list">
-                            {upgradeableProperties.map((cell) => {
+                            {upgradeableProperties.map((cell, index) => {
                               const level = propertyLevels[cell.index] ?? 0;
                               const nextLevel = level + 1;
                               const upgradeCost = getUpgradeCost(cell);
@@ -4464,6 +5173,7 @@ function App() {
                                   <button
                                     type="button"
                                     className="upgrade-button"
+                                    data-guide-focus={index === 0 ? "upgrade-first" : undefined}
                                     onClick={() => handleUpgradeProperty(cell.index)}
                                     disabled={isSubmitting || !canUpgradeProperties}
                                   >
@@ -4474,12 +5184,12 @@ function App() {
                             })}
                           </div>
                         </div>
-                      )}
-                      {sellableProperties.length > 0 && (
+                          )}
+                          {sellableProperties.length > 0 && (
                         <div className="upgrade-group">
                           <h4>Sell upgrades</h4>
                           <div className="upgrade-list">
-                            {sellableProperties.map((cell) => {
+                            {sellableProperties.map((cell, index) => {
                               const level = propertyLevels[cell.index] ?? 0;
                               const nextLevel = Math.max(0, level - 1);
                               const sellValue = getUpgradeSellValue(cell);
@@ -4503,6 +5213,7 @@ function App() {
                                   <button
                                     type="button"
                                     className="sell-button"
+                                    data-guide-focus={index === 0 ? "sell-upgrade-first" : undefined}
                                     onClick={() => handleSellUpgradeProperty(cell.index)}
                                     disabled={isSubmitting || !canSellUpgrades}
                                   >
@@ -4513,12 +5224,16 @@ function App() {
                             })}
                           </div>
                         </div>
-                      )}
-                      {!canUpgradeProperties && !canManageDebtRecovery && (
-                        <p className="upgrade-note">
-                          Upgrade changes are only available at the start of your own turn, before you roll.
-                        </p>
-                      )}
+                          )}
+                          {!canUpgradeProperties && !canManageDebtRecovery && (
+                            <p className="upgrade-note">
+                              Upgrade changes are only available at the start of your own turn, before you roll.
+                            </p>
+                          )}
+                        </>
+                      ) : (
+                        <p className="upgrade-note">{upgradeDeskState.note}</p>
+                      ))}
                     </section>
                   )}
 

@@ -1,7 +1,7 @@
 # AI Handoff
 
 ## Project
-Online Monopoly-style game for learning and iterative AI-assisted development.
+Online Monopoly-style learning project with AI-assisted iteration.
 
 ## Stack
 - Frontend: React + Vite + JavaScript
@@ -13,7 +13,7 @@ Online Monopoly-style game for learning and iterative AI-assisted development.
 - Backend: `U:\Monopoly\backend`
 
 ## Run
-### Quickest Windows start
+### Quick Windows start
 ```powershell
 cd U:\Monopoly
 .\start-game.cmd
@@ -21,52 +21,57 @@ cd U:\Monopoly
 
 ### Backend
 ```powershell
-cd U:\Monopoly\backend
-.\.venv\Scripts\python -m uvicorn main:app
+cd U:\Monopoly
+.\start-backend.cmd
 ```
 
-- Use `backend\.venv`, not the root `.venv`
-- `Activate.ps1` is optional; you can run the backend Python directly
-- If `127.0.0.1:8000` is already responding, the backend is already running
+- The backend must use `U:\Monopoly\backend\.venv`
+- Do not use the root `U:\Monopoly\.venv` for backend startup
+- `start-backend.cmd` checks that `backend\.venv\Scripts\python.exe` exists
 
 ### Frontend
 ```powershell
-cd U:\Monopoly\frontend
-npm.cmd run dev
+cd U:\Monopoly
+.\start-frontend.cmd
 ```
 
-### Root helpers
-- `U:\Monopoly\start-backend.cmd`
-- `U:\Monopoly\start-frontend.cmd`
-- `U:\Monopoly\start-game.cmd`
-
-### Latest launch notes
-- Prefer the root helper scripts on Windows instead of `Activate.ps1`
-- Backend packages are in `U:\Monopoly\backend\.venv`
-- The root `U:\Monopoly\.venv` can be misleading for backend startup
-- If the browser only shows the soft gradient background, refresh after pulling the latest frontend fix
+### Direct backend command
+```powershell
+cd U:\Monopoly\backend
+.\.venv\Scripts\python -m uvicorn main:app
+```
 
 ### Open
 - Frontend: `http://localhost:5173`
 - Backend docs: `http://127.0.0.1:8000/docs`
 
-## Verified Status
-As of the latest handoff update:
-- Backend tests: `57/57 OK`
-- Frontend: `npm.cmd run lint` OK
-- Frontend: `npm.cmd run build` OK
-- Frontend blank first screen bug fixed:
-  - cause was unsafe `currentRoom.players` access before room data existed
-  - fixed in `U:\Monopoly\frontend\src\App.jsx`
+## Verified Current Status
+Verified against real files on `2026-04-06`:
+- `start-backend.cmd`, `start-frontend.cmd`, `start-game.cmd` exist and match the current Windows flow
+- Frontend blank first screen bug is already fixed in `frontend/src/App.jsx`
+- Cause of the old bug: unsafe `currentRoom.players` access before room data existed
+- Frontend checks:
+  - `npm.cmd run lint` OK
+  - `npm.cmd run build` OK
+
+## Current Worktree
+Current local modifications:
+- `frontend/src/App.jsx`
+- `frontend/src/index.css`
+- `.claude/settings.local.json`
+
+Important:
+- `.claude/settings.local.json` is local tooling state; do not revert it unless explicitly asked
+- The current frontend changes are not only styling; they include real UI logic and accessibility behavior
 
 ## Core Architecture Rules
-- Server is authoritative.
-- Game rules must stay in backend.
-- Frontend should render state and send actions only.
-- Room/game state is currently stored in memory on the backend.
-- Identity is based on `player_token`.
-- Rejoin uses `localStorage` on the frontend.
-- Do not rely only on this handoff: always inspect the real files before continuing.
+- Server is authoritative
+- Game rules stay in the backend
+- Frontend renders state and sends actions only
+- Room/game state is currently stored in memory on the backend
+- Identity is based on `player_token`
+- Rejoin uses `localStorage` on the frontend
+- Do not rely only on this handoff: always inspect the real files before continuing
 
 ## What Is Already Implemented
 ### Room and lobby flow
@@ -88,94 +93,86 @@ As of the latest handoff update:
 - Go to jail logic
 - Winner when one player remains
 
-### Board and movement
+### Board and economy rules
 - 40-cell board data
 - Player positions
 - Pass Start bonus
 - Tax cells
 - Go To Jail cell
 - Chance / Community cards
-- Last landed cell
-
-### Economy and property rules
-- Buy property
+- Property buying
 - Skip purchase
 - Auction flow
 - Ownership
 - Rent
-- Full color set doubles base rent when allowed
+- Full color set handling
 - Mortgage / unmortgage
 - Upgrade / sell upgrade
 - Even-build rule
 - Even-sell rule
-- Mortgage blocks upgrade when group state requires it
 - Trade between players for property + cash
-- Completed-set / upgrades-unlocked messages are suppressed when mortgage state should block them
-
-### Jail flow
-- Jail turn counter
-- Forced fine and movement on the 3rd failed escape attempt
-- Voluntary pay `$50` before roll
-- UI warning / counter for jail turns
 
 ### Debt recovery and bankruptcy
-- Negative cash no longer always means instant elimination
 - `pending_bankruptcy` recovery flow
-- Recovery can be resolved via:
-  - mortgage
-  - sell upgrade
-  - trade
-  - declare bankruptcy
-- Creditor-aware debt:
-  - debt can be owed to bank
-  - debt can be owed to another player
-- Partial rent payment when player cannot cover full debt
-- `resume_player_id` support so turn flow recovers correctly after debt resolution
-- Recovery handles player leave / creditor leave / resume-player leave cases
-- Final bankruptcy:
-  - liquidates upgrades automatically first
-  - transfers properties / cash to creditor when applicable
-  - mortgaged properties transfer as mortgaged
-  - mortgaged takeover does not produce rent until unmortgaged
-- `last_bankruptcy_summary` is exposed to UI
+- Recovery through mortgage / sell upgrade / trade / declare bankruptcy
+- Creditor-aware debt
+- Debt can be owed to bank or another player
+- Partial rent payment when player cannot fully pay
+- `resume_player_id` handling
+- Recovery handling for leave-edge-cases
+- Automatic liquidation of upgrades before final bankruptcy transfer
+- `last_bankruptcy_summary` exposed to UI
 
-### Recent events / recap system
+### Recent events and recap
 - Structured `recent_events` in backend state
 - `event_id` monotonic ids
-- `kind` categories
-- structured refs:
+- event `kind`
+- event refs:
   - `player_id`
   - `target_player_id`
   - `cell_index`
-- `last_bankruptcy_summary` recap card in UI
 - Recent events UI supports:
   - grouping
-  - `Show more / Show less`
   - kind filters
-  - fixed filter order
+  - show more / show less
   - event focus
-  - entity filtering from board cells / player cards
-  - linked-event badges on cells and player cards
-  - `9+` compact badge display
+  - entity filtering from board cells and player cards
+  - linked-event badges
   - help legend
-  - help persistence via `localStorage`
-  - mobile `More` actions menu
+  - help persistence in `localStorage`
+  - mobile actions menu
   - keyboard navigation
-  - accessibility / ARIA polish
   - `aria-live` announcements
+- `last_bankruptcy_summary` recap card is rendered in the UI
 
-### Board UI polish
-- Board cells clickable for recent-event navigation
-- Player cards clickable for recent-event navigation
-- MVP player tokens on board:
-  - colored circular tokens
-  - first-letter initial
-  - active-turn highlight
-  - overlap stacking for crowded cells
-  - special jail split for cell 10:
-    - visiting zone
-    - jailed zone
-  - mobile token sizing override
+### Board and player UI
+- Board tokens exist
+- Token movement feedback exists with moving/highlight state
+- Owner markers exist on owned cells
+- Selected cell inspector exists
+- Selected player inspector exists
+- Mobile cleanup has already been done
+
+### Action guide and navigation UX
+- There is a central action guide card in `frontend/src/App.jsx`
+- It derives the current player guidance from real game state
+- It can show `Jump to ...` for the relevant active section
+- Jump uses `scrollIntoView({ block: "start" })`
+- Jump also moves keyboard focus to a preferred control when possible
+- A hidden `aria-live` region announces jump results
+- The target section gets temporary visual flash feedback
+- Section labels are normalized, including `Upgrades desk`
+
+### Desk sections UX
+- `Trade desk`, `Mortgage desk`, and `Upgrades desk` have status headers
+- Statuses include `Open`, `Locked`, `Empty`, `Waiting`, `Action needed`
+- Locked and empty desk sections are collapsible
+- These sections default to collapsed when they are explanatory only
+- Collapse preferences are stored in `localStorage`
+- The action guide shows `Reset desk layout` when custom desk collapse preferences exist
+- Reset clears the stored desk layout preferences
+- Reset also announces feedback through the action guide live region
+- Mobile tap target for the desk toggle was improved with an expanded invisible hit area
 
 ## Important Backend Files
 - `U:\Monopoly\backend\main.py`
@@ -183,55 +180,55 @@ As of the latest handoff update:
 - `U:\Monopoly\backend\room_store.py`
 - `U:\Monopoly\backend\board_data.py`
 - `U:\Monopoly\backend\card_data.py`
-- `U:\Monopoly\backend\tests\test_auction_flow.py`
-- `U:\Monopoly\backend\tests\test_debt_recovery_flow.py`
-- `U:\Monopoly\backend\tests\test_jail_fine_flow.py`
-- `U:\Monopoly\backend\tests\test_property_rules.py`
 
 ## Important Frontend Files
 - `U:\Monopoly\frontend\src\App.jsx`
 - `U:\Monopoly\frontend\src\index.css`
+- `U:\Monopoly\start-backend.cmd`
+- `U:\Monopoly\start-frontend.cmd`
+- `U:\Monopoly\start-game.cmd`
 
 ## Current MVP Simplifications
 - No WebSocket yet
 - No persistent database
 - No bots
 - No accounts
-- Trade UI is still simplified
 - In-memory backend state only
-- Board tokens are MVP circles, not themed pieces yet
-- Token movement is not animated yet
+- Trade UI is still simplified
+- Tokens are still simple circles, not themed pieces
 
 ## Best Next Step
 The best next practical step is:
 
-**Add simple token movement feedback on the board**
+**Unify UI preference reset controls**
 
 Recommended version:
 - keep backend unchanged
-- frontend-only improvement
-- animate or at least visually emphasize the token that just moved
-- keep it simple and readable on mobile
+- frontend-only
+- combine `Reset desk layout` and the existing recent-events help reset into one small `Reset UI preferences` control
+- keep the wording simple and the placement obvious
 
 Good concrete target:
-- short movement animation or step transition for board tokens
-- highlight the token / destination cell after movement
+- one reset entry point for local UI preferences
+- clear visual feedback
+- clear `aria-live` feedback
+- no extra complexity beyond the current UI system
 
 ## What Claude Code Should Check Next
-For the next board-token step, Claude Code is most useful for:
-- overlap readability when 3-4 tokens share one cell
-- jail vs visiting layout on cell 10
-- corner-cell layout
-- mobile layout around `390px`
-- whether color-by-player-order is acceptable long-term
-- UX review for token movement animation before implementation
+Claude Code is most useful for:
+- checking whether `Reset desk layout` is visually too strong next to `Jump to ...`
+- checking whether one combined `Reset UI preferences` control is clearer than multiple reset buttons
+- reviewing mobile layout when the guide card has multiple action buttons
+- reviewing wording for reset feedback and section labels
+- checking that `aria-live` feedback is helpful and not noisy
 
 ## What Codex Should Do Next
 Codex is best for:
-- implementing the token movement / highlight UI
-- wiring the visual behavior into existing React state
-- CSS changes
-- build/lint verification
+- implementing the unified reset control
+- reusing existing `localStorage` helpers and guide feedback patterns
+- keeping backend untouched
+- updating `App.jsx` and `index.css`
+- running `npm.cmd run lint` and `npm.cmd run build`
 
 ## What The User Should Learn
 The user should keep learning:
@@ -240,13 +237,14 @@ The user should keep learning:
 - `useState`
 - `useEffect`
 - `useRef`
-- keyboard / focus management
-- `fetch`
+- `localStorage`
+- accessibility basics
+- focus management
+- `aria-live`
 - FastAPI routes
 - Pydantic schemas
 - backend validation
 - server-authoritative game logic
-- how to turn a rule into a regression test
 - git workflow with small commits
 
 ## How To Start A New Chat
@@ -259,22 +257,43 @@ Always begin with:
 ## Suggested New Chat Prompt For Codex
 ```text
 Read AI_HANDOFF.md first, then inspect the real files.
-Summarize the real current state of the project.
-We are continuing from the latest board-token work.
-The next practical step is simple token movement feedback / animation on the board.
-Do not rely only on the handoff; verify the real code first.
+Do not rely only on the handoff; verify the current code before deciding anything.
+
+After checking the files:
+1. briefly summarize the real current state
+2. list what is already implemented
+3. propose the best practical next step
+4. if the next step is frontend-only, start implementing it
+
+Important working style:
+- explain what we are doing now
+- explain what I need to understand and learn
+- say what Claude Code should verify after your changes
+- keep explanations practical and simple
+- check real files before changing anything
+- after changes, run the needed checks
 ```
 
 ## Suggested New Chat Prompt For Claude Code
 ```text
 Read AI_HANDOFF.md first, then inspect the real files.
-Review the current board-token implementation and prepare edge-case / UX guidance for the next step:
-- token overlap
-- jail vs visiting layout
-- corner cells
-- mobile layout
-- movement highlight / animation risks
-Do not rely only on the handoff; verify the real code first.
+Do not rely only on the handoff; verify the current code before commenting.
+
+Focus on the current frontend state around:
+- action guide
+- jump-to-section behavior
+- desk section headers and collapse behavior
+- localStorage UI preferences
+- reset controls
+
+Then provide a practical review of:
+- visual hierarchy
+- wording consistency
+- mobile UX
+- accessibility / aria-live noise
+- whether a single "Reset UI preferences" control is better than separate resets
+
+Keep the review practical and tied to the real files.
 ```
 
 ## Working Style With This User
@@ -282,10 +301,9 @@ This project is also for learning.
 
 When helping:
 - explain what we are doing now
-- explain what the user needs to understand and learn
-- say when to use Codex
-- say when to use Claude Code
+- explain what the user should understand and learn
+- say what Claude Code should check next
 - keep explanations practical and beginner-friendly
-- prefer implementing the next real step instead of only discussing theory
+- prefer the next real step over abstract theory
 
 If Claude Code changed files, verify the real codebase before continuing.

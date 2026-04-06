@@ -5,7 +5,8 @@
       "Bash(.venv/Scripts/python.exe -m uvicorn main:app --host 127.0.0.1 --port 8000)",
       "Bash(curl -s http://127.0.0.1:8000/)",
       "Bash(npm run:*)",
-      "Bash(curl -s http://localhost:5173/)"
+      "Bash(curl -s http://localhost:5173/)",
+      "Bash(npm.cmd run:*)"
     ]
   }
 }
