@@ -13,329 +13,225 @@ Online Monopoly-style learning project with AI-assisted iteration.
 - Backend: `U:\Monopoly\backend`
 
 ## Run
-### Quick Windows start
-```powershell
-cd U:\Monopoly
-.\start-game.cmd
+### Quick Windows start (одна команда)
+```cmd
+U:\Monopoly\start.bat
 ```
+Открывает два окна cmd — бэкенд и фронтенд.
 
-### Backend
-```powershell
-cd U:\Monopoly
-.\start-backend.cmd
-```
-
-- The backend must use `U:\Monopoly\backend\.venv`
-- Do not use the root `U:\Monopoly\.venv` for backend startup
-- `start-backend.cmd` checks that `backend\.venv\Scripts\python.exe` exists
-
-### Frontend
-```powershell
-cd U:\Monopoly
-.\start-frontend.cmd
-```
-
-### Direct backend command
-```powershell
+### Backend (вручную)
+```cmd
 cd U:\Monopoly\backend
-.\.venv\Scripts\python -m uvicorn main:app
+.venv\Scripts\activate.bat
+uvicorn main:app --reload
+```
+
+### Frontend (вручную)
+```cmd
+cd U:\Monopoly\frontend
+npm run dev
 ```
 
 ### Open
 - Frontend: `http://localhost:5173`
 - Backend docs: `http://127.0.0.1:8000/docs`
 
+---
+
 ## Verified Current Status
-Verified against real files on `2026-04-06`:
-- `start-backend.cmd`, `start-frontend.cmd`, `start-game.cmd` exist and match the current Windows flow
-- Frontend blank first screen bug is already fixed in `frontend/src/App.jsx`
-- Cause of the old bug: unsafe `currentRoom.players` access before room data existed
-- Frontend screen/layout refactor is already in progress:
-  - `LandingPanel`, `LobbyView`, `FinishedGameView`, `EliminatedGameView`, and `GameView` exist
-  - most large board-center cards and desk sections were already extracted into `frontend/src/components`
-- `frontend/src/App.jsx` is currently `2805` lines
-- Frontend checks:
-  - `npm.cmd run lint` OK
-  - `npm.cmd run build` OK
+Verified against real files on `2026-04-07`.
 
-## Current Worktree
-Current local modifications:
-- `frontend/src/App.jsx`
-- `frontend/src/index.css`
-- `.claude/settings.local.json`
-- `frontend/src/components/` contains many extracted UI files and still shows as untracked in `git status`
+- `npm run lint` — OK
+- `npm run build` — OK
+- Last commit: `798822a` — "Redesign game board UI and improve player experience"
 
-Important:
-- `.claude/settings.local.json` is local tooling state; do not revert it unless explicitly asked
-- The current frontend changes are not only styling; they include real UI logic and accessibility behavior
-- If you prepare a commit, do not forget to include the new files under `frontend/src/components/`
+---
 
-## Core Architecture Rules
-- Server is authoritative
-- Game rules stay in the backend
-- Frontend renders state and sends actions only
-- Room/game state is currently stored in memory on the backend
-- Identity is based on `player_token`
-- Rejoin uses `localStorage` on the frontend
-- Do not rely only on this handoff: always inspect the real files before continuing
+## Architecture: что нельзя трогать
+- **Backend не трогать** — все игровые правила живут там
+- Frontend только рендерит состояние и отправляет actions
+- Сервер авторитетен
+- Identity через `player_token`
+- Rejoin через `localStorage`
+- In-memory backend state (нет БД)
 
-## What Is Already Implemented
-### Room and lobby flow
-- Create room
-- Join room
-- Ready / unready
-- Host-only start
-- Leave room
-- Rejoin from stored session
-- Host transfer
-- Room cleanup by TTL
+---
 
-### Core game flow
-- `lobby`, `in_game`, `finished`
-- Turn order
-- Dice rolling
-- Doubles logic
-- Jail logic
-- Go to jail logic
-- Winner when one player remains
+## Что уже сделано в frontend (актуально на 2026-04-07)
 
-### Board and economy rules
-- 40-cell board data
-- Player positions
-- Pass Start bonus
-- Tax cells
-- Go To Jail cell
-- Chance / Community cards
-- Property buying
-- Skip purchase
-- Auction flow
-- Ownership
-- Rent
-- Full color set handling
-- Mortgage / unmortgage
-- Upgrade / sell upgrade
-- Even-build rule
-- Even-sell rule
-- Trade between players for property + cash
+### Layout
+- Три колонки: `game-player-rail (260px)` | `game-main-stage` | `game-side-panel (360px)`
+- При 1100–1380px: side panel уходит под доску внутри `game-main-stage`
+- При ≥1380px: `game-main-stage` — двухколоночный grid (доска + side panel)
+- `game-player-rail` sticky при ≥1100px, не сползает при скролле (исправлено)
+- `RecentEventsCard` вынесен в `game-history-row` под layout
+- `game-history-row` выравнивается по колонкам layout на всех брейкпоинтах
 
-### Debt recovery and bankruptcy
-- `pending_bankruptcy` recovery flow
-- Recovery through mortgage / sell upgrade / trade / declare bankruptcy
-- Creditor-aware debt
-- Debt can be owed to bank or another player
-- Partial rent payment when player cannot fully pay
-- `resume_player_id` handling
-- Recovery handling for leave-edge-cases
-- Automatic liquidation of upgrades before final bankruptcy transfer
-- `last_bankruptcy_summary` exposed to UI
+### Доска (`BoardCellTile.jsx`, `BoardTilesLayer.jsx`)
+- Клетки: иконки типа (`🚂` `?` `⚡` `🔒` `🚔` `GO` `💰` `♥` `P`) вместо текста для спецклеток
+- Property-клетки: только название по центру
+- Боковые клетки: название вертикально (writing-mode)
+- Цена в цветной полосе (`cell-band-price`), на боковых — вертикально
+- Уровень upgrade: `★★★` (звёзды)
+- Mortgaged: иконка 🔒 внутри клетки
+- Кружки с числами событий (`cell-event-count-badge`) **убраны**
+- Купленные клетки: сплошная заливка цветом игрока (flat, без градиента)
+- `is-owned` — alpha 0.55, `is-owned-by-you` — alpha 0.72
+- CSS каскад правильный: `is-owned` → `is-owned-by-you` → `is-move-target` → `is-landed` → `is-focused`
 
-### Recent events and recap
-- Structured `recent_events` in backend state
-- `event_id` monotonic ids
-- event `kind`
-- event refs:
-  - `player_id`
-  - `target_player_id`
-  - `cell_index`
-- Recent events UI supports:
-  - grouping
-  - kind filters
-  - show more / show less
-  - event focus
-  - entity filtering from board cells and player cards
-  - linked-event badges
-  - help legend
-  - help persistence in `localStorage`
-  - mobile actions menu
-  - keyboard navigation
-  - `aria-live` announcements
-- `last_bankruptcy_summary` recap card is rendered in the UI
+### Токены (`PlayerToken.jsx`, CSS)
+- Чистый круг без буквы (текст убран линтером, `aria-label` сохранён)
+- Несколько фишек на клетке: отступ 3px между ними, по центру клетки (`position: absolute; inset: 0`)
+- На угловых клетках: отступ 4px
+- Анимация движения: `280ms`, плавная дуга без мигания (opacity убран из keyframes)
+- Шаг: `TOKEN_MOVE_STEP_MS = 280`, буфер `60ms`
 
-### Board and player UI
-- Board tokens exist
-- Token movement feedback exists with moving/highlight state
-- Owner markers exist on owned cells
-- Selected cell inspector exists
-- Selected player inspector exists
-- Mobile cleanup has already been done
-- Board cell, player card, token, board layer, and player grid rendering are already extracted into separate frontend components
+### Карточки игроков (`BoardPlayerCard.jsx`, CSS)
+- Компактный размер: padding `12px 14px`, border-radius `18px`
+- Аватарка `44×44px`
+- Пульсирующий ring аватарки у активного игрока (`avatar-active-pulse`)
+- `prefers-reduced-motion` отключает все анимации
 
-### Action guide and navigation UX
-- There is a central action guide card in `frontend/src/components/ActionGuideCard.jsx`
-- Its state is built from real game state via `frontend/src/components/actionGuideHelpers.js`
-- It can show `Jump to ...` for the relevant active section
-- Jump uses `scrollIntoView({ block: "start" })`
-- Jump also moves keyboard focus to a preferred control when possible
-- A hidden `aria-live` region announces jump results
-- The target section gets temporary visual flash feedback
-- Section labels are normalized, including `Upgrades desk`
-- A single `Reset UI preferences` control already exists
+### Prop-building
+- `buildGameViewProps()` в `gameViewHelpers.js` — не хук, pure helper
+- `buildFocusTargetProps()` — shared helper для section refs
+- `onSelectForTrade` и `onSelectTradeTarget` → именованные handlers в `App.jsx`:
+  - `handleSelectCellForTrade(cellIndex, cellName)`
+  - `handleSelectPlayerAsTradeTarget(targetPlayerId, targetNickname)`
+- `setStatus` убран из `setters` в gameViewHelpers — больше не проникает в prop helpers
 
-### Desk sections UX
-- `Trade desk`, `Mortgage desk`, and `Upgrades desk` have status headers
-- Statuses include `Open`, `Locked`, `Empty`, `Waiting`, `Action needed`
-- Locked and empty desk sections are collapsible
-- These sections default to collapsed when they are explanatory only
-- Collapse preferences are stored in `localStorage`
-- Recent-events help preference is also stored in `localStorage`
-- The action guide shows `Reset UI preferences` when custom local UI preferences exist
-- Reset clears both desk layout preferences and recent-events help preference
-- Reset also announces feedback through the action guide live region
-- Mobile tap target for the desk toggle was improved with an expanded invisible hit area
+### Логика доступа к desk
+- `canManagePurchaseFunding` — новое условие: игрок текущий + есть `pendingPurchase` + денег меньше чем цена
+- Позволяет открыть MortgageDeskCard и UpgradesDeskCard когда не хватает денег на покупку
 
-## Current Frontend Refactor State
-- `frontend/src/App.jsx` is no longer a single giant render file, but it is still the orchestration layer
-- `App.jsx` still owns state, API calls, polling, refs, derived data, and action handlers
-- `frontend/src/components/GameView.jsx` now assembles the active in-game screen from extracted child components
-- The next major cleanup area is not more JSX extraction; it is the long inline prop-building for `GameView` inside `App.jsx`
-- Keep backend rules untouched during this refactor series
+---
 
-## Important Backend Files
+## Важные файлы frontend
+
+| Файл | Назначение |
+|------|-----------|
+| `frontend/src/App.jsx` | Оркестрация, state, API, handlers |
+| `frontend/src/index.css` | Все стили |
+| `frontend/src/components/GameView.jsx` | Экран игры |
+| `frontend/src/components/BoardCellTile.jsx` | Одна клетка доски |
+| `frontend/src/components/BoardTilesLayer.jsx` | Все клетки + owner tinting |
+| `frontend/src/components/BoardPlayerCard.jsx` | Карточка игрока в рейле |
+| `frontend/src/components/BoardPlayersGrid.jsx` | Сетка карточек |
+| `frontend/src/components/PlayerToken.jsx` | Фишка |
+| `frontend/src/components/boardHelpers.js` | Движение токенов, grid placement |
+| `frontend/src/components/gameViewHelpers.js` | Prop assembly для GameView |
+| `frontend/src/components/utils.js` | `hexToRgba`, `getPlayerTokenLabel` |
+| `frontend/src/components/ActionGuideCard.jsx` | Гид по действиям |
+| `frontend/src/components/RecentEventsCard.jsx` | История событий |
+| `frontend/src/components/actionGuideHelpers.js` | Логика action guide |
+
+---
+
+## Важные файлы backend
 - `U:\Monopoly\backend\main.py`
-- `U:\Monopoly\backend\schemas.py`
+- `U:\Monopoly\backend\board_data.py` — 40 клеток, только name/cell_type/price/color_group, **нет image_url**
 - `U:\Monopoly\backend\room_store.py`
-- `U:\Monopoly\backend\board_data.py`
+- `U:\Monopoly\backend\schemas.py`
 - `U:\Monopoly\backend\card_data.py`
 
-## Important Frontend Files
-- `U:\Monopoly\frontend\src\App.jsx`
-- `U:\Monopoly\frontend\src\index.css`
-- `U:\Monopoly\frontend\src\components\GameView.jsx`
-- `U:\Monopoly\frontend\src\components\LandingPanel.jsx`
-- `U:\Monopoly\frontend\src\components\LobbyView.jsx`
-- `U:\Monopoly\frontend\src\components\ActionGuideCard.jsx`
-- `U:\Monopoly\frontend\src\components\RecentEventsCard.jsx`
-- `U:\Monopoly\frontend\src\components\actionGuideHelpers.js`
-- `U:\Monopoly\frontend\src\components\recentEventsHelpers.js`
-- `U:\Monopoly\start-backend.cmd`
-- `U:\Monopoly\start-frontend.cmd`
-- `U:\Monopoly\start-game.cmd`
+---
 
-## Current MVP Simplifications
-- No WebSocket yet
-- No persistent database
-- No bots
-- No accounts
-- In-memory backend state only
-- Trade UI is still simplified
-- Tokens are still simple circles, not themed pieces
+## Что реализовано в игре (backend)
+- Комнаты: create / join / leave / rejoin / host transfer
+- Лобби: ready / start
+- Ход: бросок кубиков, doubles, jail, go to jail
+- Экономика: покупка, аукцион, рента, налоги, chance/community cards
+- Mortgage / unmortgage / upgrade / sell upgrade
+- Trade (property + cash)
+- Bankruptcy flow с debt recovery
+- Recent events с refs
 
-## Best Next Step
-The best next practical step is:
+---
 
-**Move `GameView` prop-building out of `App.jsx`**
+## Что НЕ реализовано (MVP simplifications)
+- Нет WebSocket (polling)
+- Нет БД (in-memory)
+- Нет ботов
+- Нет аккаунтов
+- Нет изображений/логотипов на клетках (board_data.py не содержит image_url)
 
-Recommended version:
-- keep backend unchanged
-- frontend-only
-- keep `GameView.jsx` presentational
-- extract the long inline `GameView` prop assembly from `App.jsx` into a focused helper or hook
-- examples:
-  - `buildGameViewProps(...)`
-  - `useGameViewModel(...)`
+---
 
-Good concrete target:
-- make `App.jsx` shorter and easier to scan
-- keep all existing handlers and behavior the same
-- avoid moving game rules into the frontend
-- do not change backend contracts
+## Что можно делать дальше
 
-## What Claude Code Should Check Next
-Claude Code is most useful for:
-- reviewing whether `GameView` is the right screen boundary
-- checking whether the next extraction should be a helper/hook instead of another UI component
-- reviewing prop shape clarity and naming consistency
-- checking for places where `App.jsx` is still doing too much presentation work
-- checking for any accessibility or focus-regression risk after future refactor-only moves
+### Визуал доски (если появятся картинки)
+- Добавить `image_url` в `board_data.py` для каждой клетки
+- Создать `frontend/src/components/cellImages.js` — маппинг index → url
+- Рендерить `<img>` внутри `cell-main-content` в `BoardCellTile.jsx`
 
-## What Codex Should Do Next
-Codex is best for:
-- implementing the next safe frontend-only refactor
-- moving `GameView` prop-building out of `App.jsx`
-- keeping `GameView.jsx` and the already extracted components presentation-only
-- keeping backend untouched
-- updating `App.jsx` and a small helper/hook file if needed
-- running `npm.cmd run lint` and `npm.cmd run build`
+### UX / polish
+- Отображение названий улиц в боковых клетках можно сократить через `text-overflow: ellipsis`
+- Анимация `avatar-active-pulse` у игрока на доске (сейчас только в рейле)
+- Адаптив ≤780px — проверить новый layout доски на мобиле
 
-## What The User Should Learn
-The user should keep learning:
-- React rendering from state
-- UI state vs game state
-- `useState`
-- `useEffect`
-- `useRef`
-- `localStorage`
-- accessibility basics
-- focus management
-- `aria-live`
-- FastAPI routes
-- Pydantic schemas
-- backend validation
-- server-authoritative game logic
-- git workflow with small commits
+### Код / архитектура
+- `App.jsx` всё ещё ~2800 строк — можно выносить большие useEffect-блоки в custom hooks
+- Trade UI упрощён — можно улучшить
+- Нет тестов
 
-## How To Start A New Chat
-Always begin with:
-1. Read `AI_HANDOFF.md`
-2. Inspect the real files
-3. Summarize the real current state
-4. Only then propose the next practical step
+---
 
-## Suggested New Chat Prompt For Codex
-```text
-Read AI_HANDOFF.md first, then inspect the real files.
-Do not rely only on the handoff; verify the current code before deciding anything.
+## Как начать новый чат
 
-After checking the files:
-1. briefly summarize the real current state
-2. list what is already implemented
-3. propose the best practical next step
-4. if the next step is frontend-only, start implementing it
+1. Прочитать `AI_HANDOFF.md`
+2. Проверить реальные файлы (не доверять только handoff)
+3. Запустить `npm run build` — убедиться что всё чисто
+4. Предложить следующий шаг
 
-Important working style:
-- explain what we are doing now
-- explain what I need to understand and learn
-- say what Claude Code should verify after your changes
-- keep explanations practical and simple
-- check real files before changing anything
-- after changes, run the needed checks
+---
 
-Current priority:
-- the frontend has already been split into many components
-- `GameView.jsx` already exists
-- the best practical next step is probably moving the long `GameView` prop-building out of `App.jsx`
-- keep backend rules untouched
+## Промт для Claude Code
+```
+Прочитай AI_HANDOFF.md, затем проверь реальные файлы.
+Не полагайся только на handoff — верифицируй код перед любыми выводами.
+
+Проверь:
+- frontend/src/App.jsx — текущее состояние оркестрации
+- frontend/src/components/GameView.jsx — структура экрана
+- frontend/src/index.css — стили доски и карточек
+- frontend/src/components/BoardCellTile.jsx — рендер клетки
+- frontend/src/components/gameViewHelpers.js — prop assembly
+
+Дай практическую оценку:
+- есть ли регрессии после последних изменений
+- что стоит улучшить следующим шагом
+- нет ли новых мест где UI-логика протекает не туда
+
+Отвечай на русском. Всегда говори что надо исправлять и спрашивай "делаем?" перед реализацией.
 ```
 
-## Suggested New Chat Prompt For Claude Code
-```text
-Read AI_HANDOFF.md first, then inspect the real files.
-Do not rely only on the handoff; verify the current code before commenting.
+## Промт для Codex
+```
+Прочитай AI_HANDOFF.md, затем проверь реальные файлы.
+Не полагайся только на handoff.
 
-Focus on the current frontend state around:
-- `App.jsx` as orchestration layer
-- `GameView.jsx` as active-game screen container
-- extracted components under `frontend/src/components`
-- whether the next refactor should be a helper/hook instead of another UI component
+После проверки:
+1. Кратко опиши реальное состояние
+2. Предложи следующий практический шаг
+3. Реализуй если это frontend-only изменение
 
-Then provide a practical review of:
-- screen/component boundaries
-- prop shape clarity
-- readability and maintainability of `App.jsx`
-- risk of behavior regressions if prop-building is moved out of `App.jsx`
-- what to verify in browser after that refactor
+Правила работы:
+- Backend не трогать
+- Проверять реальные файлы перед изменениями
+- После изменений: npm run lint && npm run build
+- Объяснять что делаешь и почему
 
-Keep the review practical and tied to the real files.
+Текущий приоритет:
+- Доска визуально переработана (иконки, цены в полосе, заливка владельца)
+- Layout трёхколоночный, sticky rail работает
+- Следующий шаг — на усмотрение после проверки файлов
 ```
 
-## Working Style With This User
-This project is also for learning.
+---
 
-When helping:
-- explain what we are doing now
-- explain what the user should understand and learn
-- say what Claude Code should check next
-- keep explanations practical and beginner-friendly
-- prefer the next real step over abstract theory
-
-If Claude Code changed files, verify the real codebase before continuing.
+## Стиль работы с пользователем
+- Отвечать на русском
+- Всегда говорить что нужно исправить
+- Всегда спрашивать "делаем?" перед реализацией
+- Проверять реальные файлы, не доверять только handoff
+- Запускать `npm run build` после каждого изменения
