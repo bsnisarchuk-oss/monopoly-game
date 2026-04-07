@@ -1,5 +1,20 @@
-import { formatLinkedEventCount } from "./recentEventsHelpers";
-import { getPlayerTokenLabel } from "./utils";
+const CELL_ICONS = {
+  start: "GO",
+  railroad: "🚂",
+  utility: "⚡",
+  chance: "?",
+  community: "♥",
+  tax: "💰",
+  jail: "🔒",
+  go_to_jail: "🚔",
+  free_parking: "P",
+};
+
+function formatCellPrice(cell) {
+  if (cell.price) return `$${cell.price}`;
+  if (typeof cell.amount === "number" && cell.cell_type === "tax") return `-$${cell.amount}`;
+  return null;
+}
 
 function BoardCellTile({
   cell,
@@ -23,6 +38,9 @@ function BoardCellTile({
   onFocus,
   renderPlayerToken,
 }) {
+  const cellIcon = CELL_ICONS[cell.cell_type] ?? null;
+  const priceLabel = formatCellPrice(cell);
+
   return (
     <article
       ref={tileRef}
@@ -30,7 +48,9 @@ function BoardCellTile({
         isLanded ? "is-landed" : ""
       } ${isFocused ? "is-focused" : ""} ${isMoveTarget ? "is-move-target" : ""} ${
         ownerPlayer ? "is-owned" : ""
-      } ${isOwnedByYou ? "is-owned-by-you" : ""} is-actionable`}
+      } ${isOwnedByYou ? "is-owned-by-you" : ""} ${
+        isMortgaged ? "is-mortgaged" : ""
+      } is-actionable`}
       role="button"
       tabIndex={0}
       onClick={onFocus}
@@ -42,61 +62,68 @@ function BoardCellTile({
       }}
       style={tileStyle}
     >
-      <span className={`cell-band cell-band-${cell.cell_type}`} aria-hidden="true" />
-      {linkedEventCount > 0 && (
-        <span
-          className="cell-event-count-badge"
-          title={linkedEventLabel}
-          aria-label={linkedEventLabel}
-        >
-          {formatLinkedEventCount(linkedEventCount)}
-        </span>
-      )}
-      <h4>{cell.name}</h4>
-      {ownerPlayer && (
-        <p
-          className="cell-owner-badge"
-          title={`Owned by ${ownerPlayer.nickname}`}
-          aria-label={`Owned by ${ownerPlayer.nickname}`}
-        >
-          <span className="cell-owner-dot" aria-hidden="true" />
-          <span className="cell-owner-label">{getPlayerTokenLabel(ownerPlayer.nickname)}</span>
-        </p>
-      )}
-      {isMortgaged && (
-        <p className="cell-mortgaged-badge">Mortgaged</p>
-      )}
-      {cell.cell_type === "property" && propertyLevel > 0 && (
-        <p className="cell-level-badge">
-          Level {propertyLevel}
-        </p>
-      )}
-      {isJailCell ? (
-        <div className="cell-jail-layout">
-          {visitingPlayers.length > 0 && (
-            <div className="cell-occupants cell-visiting-zone">
-              {visitingPlayers.map((player, occupantIndex) =>
-                renderPlayerToken(player, occupantIndex),
-              )}
-            </div>
-          )}
-          {jailPlayers.length > 0 && (
-            <div className="cell-occupants cell-jail-zone">
-              {jailPlayers.map((player, occupantIndex) =>
-                renderPlayerToken(player, occupantIndex),
-              )}
-            </div>
+      <span className={`cell-band cell-band-${cell.cell_type}`} aria-hidden="true">
+        {priceLabel && <span className="cell-band-price">{priceLabel}</span>}
+      </span>
+
+      <div className="cell-tile-body">
+        {ownerPlayer && (
+          <span className="sr-only">{`Owned by ${ownerPlayer.nickname}`}</span>
+        )}
+
+        <div className="cell-main-content">
+          {cellIcon ? (
+            <span className="cell-type-icon" aria-hidden="true">
+              {cellIcon}
+            </span>
+          ) : (
+            <h4 className="cell-name">{cell.name}</h4>
           )}
         </div>
-      ) : (
-        occupants.length > 0 && (
-          <div className="cell-occupants">
-            {occupants.map((player, occupantIndex) =>
-              renderPlayerToken(player, occupantIndex),
-            )}
-          </div>
-        )
-      )}
+
+        <div className="cell-tile-bottom">
+          {(propertyLevel > 0 || isMortgaged) && (
+            <div className="cell-indicators">
+              {propertyLevel > 0 && (
+                <span className="cell-level-stars" aria-label={`Level ${propertyLevel}`}>
+                  {"★".repeat(propertyLevel)}
+                </span>
+              )}
+              {isMortgaged && (
+                <span className="cell-lock-icon" aria-hidden="true">🔒</span>
+              )}
+            </div>
+          )}
+
+          {isJailCell ? (
+            <div className="cell-jail-layout">
+              {visitingPlayers.length > 0 && (
+                <div className="cell-occupants cell-visiting-zone">
+                  {visitingPlayers.map((player, occupantIndex) =>
+                    renderPlayerToken(player, occupantIndex),
+                  )}
+                </div>
+              )}
+              {jailPlayers.length > 0 && (
+                <div className="cell-occupants cell-jail-zone">
+                  {jailPlayers.map((player, occupantIndex) =>
+                    renderPlayerToken(player, occupantIndex),
+                  )}
+                </div>
+              )}
+            </div>
+          ) : (
+            occupants.length > 0 && (
+              <div className="cell-occupants">
+                {occupants.map((player, occupantIndex) =>
+                  renderPlayerToken(player, occupantIndex),
+                )}
+              </div>
+            )
+          )}
+        </div>
+      </div>
+
     </article>
   );
 }

@@ -36,58 +36,86 @@ function GameView({
 }) {
   return (
     <section className="game-card">
-      <div className="room-card-header">
-        <div>
-          <h2>Game</h2>
-          <p>
-            Room code: <strong>{roomCode}</strong>
-          </p>
-          <p>
-            Turn: <strong>{turnNumber}</strong>
-          </p>
+      <div className="room-card-header game-card-header">
+        <div className="game-title-block">
+          <p className="game-kicker">Live table</p>
+          <h2>Game board</h2>
+          <div className="game-meta-row">
+            <span className="game-meta-pill">
+              Room <strong>{roomCode}</strong>
+            </span>
+            <span className="game-meta-pill">
+              Turn <strong>{turnNumber}</strong>
+            </span>
+          </div>
         </div>
-        <p className="player-id">Your player id: {playerId}</p>
+        <p className="player-id game-player-id">
+          Your player id: <strong>{playerId}</strong>
+        </p>
       </div>
 
-      <section className="monopoly-board-shell">
-        <div className="monopoly-board">
-          <section className="board-center">
-            <BoardCenterSummaryCard {...boardCenterSummaryProps} />
+      <div className="game-table-layout">
+        <aside className="game-player-rail">
+          <div className="game-column-header">
+            <p className="game-column-kicker">Table view</p>
+            <h3>Players</h3>
+            <p>Pick a player card to inspect them or prepare a trade target.</p>
+          </div>
+          <BoardPlayersGrid {...boardPlayersGridProps} />
+        </aside>
 
-            <ActionGuideCard {...actionGuideCardProps} />
+        <section className="game-main-stage">
+          <section className="monopoly-board-shell">
+            <div className="monopoly-board">
+              <section className="board-center">
+                <div className="board-center-spotlight">
+                  <ActionGuideCard {...actionGuideCardProps} />
+                  <BoardCenterActions {...boardCenterActionsProps} />
+                  {pendingPurchaseCardProps && (
+                    <PendingPurchaseCard {...pendingPurchaseCardProps} />
+                  )}
+                  {auctionCardProps && <AuctionCard {...auctionCardProps} />}
+                </div>
+              </section>
 
-            {selectedCellInspectorProps && (
-              <SelectedCellInspector {...selectedCellInspectorProps} />
-            )}
-
-            {selectedPlayerInspectorProps && (
-              <SelectedPlayerInspector {...selectedPlayerInspectorProps} />
-            )}
-
-            {bankruptcySummaryProps && <BankruptcySummaryCard {...bankruptcySummaryProps} />}
-
-            <BoardCenterActions {...boardCenterActionsProps} />
-
-            {pendingPurchaseCardProps && <PendingPurchaseCard {...pendingPurchaseCardProps} />}
-
-            {auctionCardProps && <AuctionCard {...auctionCardProps} />}
-
-            {tradeDeskCardProps && <TradeDeskCard {...tradeDeskCardProps} />}
-
-            {mortgageDeskCardProps && <MortgageDeskCard {...mortgageDeskCardProps} />}
-
-            {upgradesDeskCardProps && <UpgradesDeskCard {...upgradesDeskCardProps} />}
-
-            <RecentEventsCard {...recentEventsCardProps} />
-
-            {drawnCard && <DrawnCardCard card={drawnCard} />}
+              <BoardTilesLayer {...boardTilesLayerProps} />
+            </div>
           </section>
 
-          <BoardTilesLayer {...boardTilesLayerProps} />
-        </div>
-      </section>
+          <aside className="game-side-panel game-side-panel-inline">
+            <div className="game-column-header">
+              <p className="game-column-kicker">Control desk</p>
+              <h3>Details and actions</h3>
+              <p>Board details, desks, and history stay here so the board remains visible.</p>
+            </div>
+            <div className="game-side-stack">
+              <BoardCenterSummaryCard {...boardCenterSummaryProps} />
 
-      <BoardPlayersGrid {...boardPlayersGridProps} />
+              {selectedCellInspectorProps && (
+                <SelectedCellInspector {...selectedCellInspectorProps} />
+              )}
+
+              {selectedPlayerInspectorProps && (
+                <SelectedPlayerInspector {...selectedPlayerInspectorProps} />
+              )}
+
+              {bankruptcySummaryProps && <BankruptcySummaryCard {...bankruptcySummaryProps} />}
+
+              {tradeDeskCardProps && <TradeDeskCard {...tradeDeskCardProps} />}
+
+              {mortgageDeskCardProps && <MortgageDeskCard {...mortgageDeskCardProps} />}
+
+              {upgradesDeskCardProps && <UpgradesDeskCard {...upgradesDeskCardProps} />}
+
+              {drawnCard && <DrawnCardCard card={drawnCard} />}
+            </div>
+          </aside>
+        </section>
+      </div>
+
+      <div className="game-history-row">
+        <RecentEventsCard {...recentEventsCardProps} />
+      </div>
     </section>
   );
 }

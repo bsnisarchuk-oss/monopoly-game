@@ -1,6 +1,7 @@
 import BoardCellTile from "./BoardCellTile";
 import { getBoardPlacement, getBoardSide, splitJailOccupants } from "./boardHelpers";
 import { formatLinkedEventLabel } from "./recentEventsHelpers";
+import { hexToRgba } from "./utils";
 
 function BoardTilesLayer({
   boardCells = [],
@@ -39,6 +40,9 @@ function BoardTilesLayer({
     const ownerPlayerId = propertyOwners[cell.index] ?? null;
     const ownerPlayer = ownerPlayerId ? getPlayerById(ownerPlayerId) : null;
     const ownerColor = ownerPlayer ? getPlayerColor(ownerPlayer.player_id) : null;
+    const ownerTint = ownerColor ? hexToRgba(ownerColor, 0.55) : null;
+    const ownerTintStrong = ownerColor ? hexToRgba(ownerColor, 0.72) : null;
+    const ownerShadow = ownerColor ? hexToRgba(ownerColor, 0.45) : null;
 
     return (
       <BoardCellTile
@@ -56,7 +60,14 @@ function BoardTilesLayer({
         tileStyle={{
           gridRow: row,
           gridColumn: column,
-          ...(ownerColor ? { "--cell-owner-color": ownerColor } : {}),
+          ...(ownerColor
+            ? {
+                "--cell-owner-color": ownerColor,
+                "--cell-owner-tint": ownerTint,
+                "--cell-owner-tint-strong": ownerTintStrong,
+                "--cell-owner-shadow": ownerShadow,
+              }
+            : {}),
         }}
         isMortgaged={propertyMortgaged[cell.index]}
         propertyLevel={propertyLevels[cell.index] ?? 0}

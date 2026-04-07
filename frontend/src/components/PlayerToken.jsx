@@ -1,5 +1,3 @@
-import { getPlayerTokenLabel } from "./utils";
-
 function PlayerToken({
   player,
   occupantIndex,
@@ -19,13 +17,11 @@ function PlayerToken({
               "--token-move-from-y": `${movementOffset.y}px`,
             }
           : {}),
-        zIndex: Math.max(1, 8 - occupantIndex) + (isMoving ? 20 : 0),
+        zIndex: (occupantIndex + 1) + (isMoving ? 20 : 0),
       }}
       title={player.nickname}
       aria-label={`${player.nickname} token${isMoving ? " just moved" : ""}`}
-    >
-      {getPlayerTokenLabel(player.nickname)}
-    </div>
+    />
   );
 }
 

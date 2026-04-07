@@ -14,6 +14,7 @@ function BoardPlayersGrid({
   getPlayerPosition,
   getPlayerCell,
   getRentHint,
+  getPlayerColor,
   getOwnedCellsByPlayer,
   getMortgagedOwnedCellCount,
   onFocusPlayer,
@@ -30,6 +31,7 @@ function BoardPlayersGrid({
         const playerRentHint = getRentHint(playerCell, playerLevel);
         const playerOwnedCellCount = getOwnedCellsByPlayer(player.player_id).length;
         const playerMortgagedCellCount = getMortgagedOwnedCellCount(player.player_id);
+        const playerColor = getPlayerColor(player.player_id);
         const isTradeTargetReady = selectedTradeTargetId === player.player_id;
         const statusLabel =
           currentTurnPlayerId === player.player_id
@@ -55,6 +57,7 @@ function BoardPlayersGrid({
             cash={cashByPlayer[player.player_id] ?? 0}
             ownedCellCount={playerOwnedCellCount}
             mortgagedCellCount={playerMortgagedCellCount}
+            playerColor={playerColor}
             statusLabel={statusLabel}
             onFocus={() => onFocusPlayer(player)}
             cardRef={(element) => onPlayerCardRef(player.player_id, element)}

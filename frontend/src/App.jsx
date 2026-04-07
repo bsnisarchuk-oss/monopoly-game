@@ -2,16 +2,17 @@ import { useEffect, useRef, useState } from "react";
 import {
   buildActionGuide,
   buildActionGuideJumpAnnouncement,
-  buildActionGuideJumpButtonLabel,
   buildGuideFocusSelector,
 } from "./components/actionGuideHelpers";
 import EliminatedGameView from "./components/EliminatedGameView";
 import FinishedGameView from "./components/FinishedGameView";
 import GameView from "./components/GameView";
+import { buildGameViewProps } from "./components/gameViewHelpers";
 import LandingPanel from "./components/LandingPanel";
 import LobbyView from "./components/LobbyView";
 import PlayerToken from "./components/PlayerToken";
 import {
+  buildTokenMovementPath,
   getTokenMovementOffset,
   splitJailOccupants,
 } from "./components/boardHelpers";
@@ -30,7 +31,8 @@ const MAX_PROPERTY_LEVEL = 4;
 const JAIL_POSITION = 10;
 const PROPERTY_RENT_MULTIPLIERS = [1, 2, 4, 7, 11];
 const RECENT_EVENT_HIGHLIGHT_MS = 4500;
-const TOKEN_MOVE_FEEDBACK_MS = 1200;
+const TOKEN_MOVE_STEP_MS = 280;
+const TOKEN_MOVE_FINISH_BUFFER_MS = 60;
 const MOBILE_RECENT_EVENTS_BREAKPOINT = "(max-width: 640px)";
 const PLAYER_TOKEN_COLORS = ["#d94f3d", "#3b7fd4", "#3aaa5e", "#e09b2a"];
 const ACTION_GUIDE_FLASH_MS = 900;
@@ -429,6 +431,19 @@ function App() {
       .map((movementEffect) => movementEffect.toPosition)
       .filter((position) => Number.isInteger(position)),
   );
+  const renderedPlayerPositions =
+    currentRoom?.players.reduce((positionsByPlayerId, player) => {
+      const animatedPosition = movingTokenEffects[player.player_id]?.displayPosition;
+      const actualPosition = playerPositions?.[player.player_id];
+
+      if (Number.isInteger(animatedPosition)) {
+        positionsByPlayerId[player.player_id] = animatedPosition;
+      } else if (Number.isInteger(actualPosition)) {
+        positionsByPlayerId[player.player_id] = actualPosition;
+      }
+
+      return positionsByPlayerId;
+    }, {}) ?? {};
   const inspectedCell = Number.isInteger(focusedEventCellIndex)
     ? boardCells.find((cell) => cell.index === focusedEventCellIndex) ?? null
     : null;
@@ -716,7 +731,7 @@ function App() {
 
     return (
       <PlayerToken
-        key={player.player_id}
+        key={`${player.player_id}-${movementEffect?.animationId ?? "idle"}`}
         player={player}
         occupantIndex={occupantIndex}
         tokenColor={tokenColor}
@@ -725,6 +740,24 @@ function App() {
         isMoving={Boolean(movementEffect)}
       />
     );
+  }
+
+  function clearTokenMovementTimers(targetPlayerId = null) {
+    if (targetPlayerId) {
+      for (const timeoutId of tokenMovementTimeoutsRef.current[targetPlayerId] ?? []) {
+        window.clearTimeout(timeoutId);
+      }
+      delete tokenMovementTimeoutsRef.current[targetPlayerId];
+      return;
+    }
+
+    for (const timeoutIds of Object.values(tokenMovementTimeoutsRef.current)) {
+      for (const timeoutId of timeoutIds) {
+        window.clearTimeout(timeoutId);
+      }
+    }
+
+    tokenMovementTimeoutsRef.current = {};
   }
 
   function ownsFullColorSet(ownerId, colorGroup) {
@@ -817,8 +850,14 @@ function App() {
     isGameOpen &&
     pendingBankruptcy?.player_id === playerId &&
     Boolean(playerToken);
-  const canManageMortgages = canUsePreRollDesk || canManageDebtRecovery;
-  const canSellUpgrades = canUsePreRollDesk || canManageDebtRecovery;
+  const canManagePurchaseFunding =
+    isGameOpen &&
+    currentTurnPlayerId === playerId &&
+    Boolean(pendingPurchase) &&
+    currentPlayerCash < (pendingPurchase?.price ?? Infinity) &&
+    Boolean(playerToken);
+  const canManageMortgages = canUsePreRollDesk || canManageDebtRecovery || canManagePurchaseFunding;
+  const canSellUpgrades = canUsePreRollDesk || canManageDebtRecovery || canManagePurchaseFunding;
   const canUnmortgageProperties = canUsePreRollDesk;
   const mortgageableCells =
     currentPlayer == null
@@ -1366,10 +1405,7 @@ function App() {
   useEffect(() => {
     previousPositionsRef.current = {};
     setMovingTokenEffects({});
-    Object.values(tokenMovementTimeoutsRef.current).forEach((timeoutId) => {
-      window.clearTimeout(timeoutId);
-    });
-    tokenMovementTimeoutsRef.current = {};
+    clearTokenMovementTimers();
   }, [currentRoomCode]);
 
   useEffect(() => {
@@ -1391,10 +1427,20 @@ function App() {
 
       const previousPosition = previousPositionsRef.current[player.player_id];
       if (Number.isInteger(previousPosition) && previousPosition !== nextPosition) {
+        const rollTotal = (currentRoom.game?.turn?.last_roll ?? []).reduce(
+          (sum, value) => sum + value,
+          0,
+        );
+        const movementPath = buildTokenMovementPath(previousPosition, nextPosition, rollTotal);
+
+        if (movementPath.length === 0) {
+          continue;
+        }
+
         nextMovementEffects.push({
           playerId: player.player_id,
           fromPosition: previousPosition,
-          toPosition: nextPosition,
+          path: movementPath,
         });
       }
     }
@@ -1405,20 +1451,40 @@ function App() {
       return;
     }
 
-    setMovingTokenEffects((current) => {
-      const next = { ...current };
-      for (const movementEffect of nextMovementEffects) {
-        next[movementEffect.playerId] = movementEffect;
-      }
-      return next;
-    });
-
     for (const movementEffect of nextMovementEffects) {
-      if (tokenMovementTimeoutsRef.current[movementEffect.playerId]) {
-        window.clearTimeout(tokenMovementTimeoutsRef.current[movementEffect.playerId]);
-      }
+      clearTokenMovementTimers(movementEffect.playerId);
 
-      tokenMovementTimeoutsRef.current[movementEffect.playerId] = window.setTimeout(() => {
+      const timeoutIds = [];
+      const firstStepPosition = movementEffect.path[0];
+
+      setMovingTokenEffects((current) => ({
+        ...current,
+        [movementEffect.playerId]: {
+          animationId: 1,
+          displayPosition: firstStepPosition,
+          fromPosition: movementEffect.fromPosition,
+          toPosition: firstStepPosition,
+        },
+      }));
+
+      movementEffect.path.slice(1).forEach((stepPosition, pathIndex) => {
+        const stepFromPosition = movementEffect.path[pathIndex];
+        const timeoutId = window.setTimeout(() => {
+          setMovingTokenEffects((current) => ({
+            ...current,
+            [movementEffect.playerId]: {
+              animationId: pathIndex + 2,
+              displayPosition: stepPosition,
+              fromPosition: stepFromPosition,
+              toPosition: stepPosition,
+            },
+          }));
+        }, (pathIndex + 1) * TOKEN_MOVE_STEP_MS);
+
+        timeoutIds.push(timeoutId);
+      });
+
+      const cleanupTimeoutId = window.setTimeout(() => {
         setMovingTokenEffects((current) => {
           if (!current[movementEffect.playerId]) {
             return current;
@@ -1429,8 +1495,11 @@ function App() {
           return next;
         });
 
-        delete tokenMovementTimeoutsRef.current[movementEffect.playerId];
-      }, TOKEN_MOVE_FEEDBACK_MS);
+        clearTokenMovementTimers(movementEffect.playerId);
+      }, movementEffect.path.length * TOKEN_MOVE_STEP_MS + TOKEN_MOVE_FINISH_BUFFER_MS);
+
+      timeoutIds.push(cleanupTimeoutId);
+      tokenMovementTimeoutsRef.current[movementEffect.playerId] = timeoutIds;
     }
   }, [currentRoomCode, currentRoom, playerPositions]);
 
@@ -1682,10 +1751,7 @@ function App() {
   useEffect(() => {
     return () => {
       clearRecentEventHighlightTimeouts();
-      Object.values(tokenMovementTimeoutsRef.current).forEach((timeoutId) => {
-        window.clearTimeout(timeoutId);
-      });
-      tokenMovementTimeoutsRef.current = {};
+      clearTokenMovementTimers();
     };
   }, []);
 
@@ -2665,6 +2731,243 @@ function App() {
     }
   }
 
+  function handleSelectCellForTrade(cellIndex, cellName) {
+    const isAlreadySelected = String(cellIndex) === selectedTradePosition;
+    setSelectedTradePosition(String(cellIndex));
+    setStatus(
+      isAlreadySelected
+        ? `${cellName} is already selected in the trade desk.`
+        : `Prepared ${cellName} in the trade desk below.`,
+    );
+  }
+
+  function handleSelectPlayerAsTradeTarget(targetPlayerId, targetNickname) {
+    const isAlreadySelected = targetPlayerId === selectedTradeTargetId;
+    setSelectedTradeTargetId(targetPlayerId);
+    setStatus(
+      isAlreadySelected
+        ? `${targetNickname} is already selected in the trade form.`
+        : `Prepared ${targetNickname} in the trade form below.`,
+    );
+  }
+
+  const gameViewProps =
+    currentRoom && isGameOpen && currentPlayer
+      ? buildGameViewProps({
+          room: currentRoom,
+          playerId,
+          actionGuide,
+          hasStoredUiPreference,
+          isSubmitting,
+          lastBankruptcySummary,
+          lastDrawnCard,
+          summaryState: {
+            currentTurnPlayer,
+            lastLandedCell,
+            lastLandedPlayer,
+            lastLandedRentHint,
+            lastLandedCellLevel,
+            lastLandedCellOwner,
+            lastLandedCellMortgaged,
+            lastEffects,
+          },
+          selectedCellState: {
+            inspectedCell,
+            inspectedCellOwner,
+            inspectedCellRentHint,
+            inspectedCellMortgaged,
+            inspectedCellLevel,
+            inspectedCellOccupants,
+            inspectedCellLinkedEventCount,
+            inspectedCellJailGroups,
+            inspectedCellQuickActionMessage,
+            inspectedCellCanBuy,
+            inspectedCellCanSkipPurchase,
+            inspectedCellCanUpgrade,
+            inspectedCellCanSellUpgrade,
+            inspectedCellCanMortgage,
+            inspectedCellCanUnmortgage,
+            inspectedCellCanUseTradeDesk,
+            inspectedCellIsSelectedInTradeDesk,
+          },
+          selectedPlayerState: {
+            inspectedPlayer,
+            inspectedPlayerColor,
+            inspectedPlayerIsCurrentTurn,
+            inspectedPlayerCash,
+            inspectedPlayerPosition,
+            inspectedPlayerCell,
+            pendingBankruptcy,
+            inspectedPlayerInJail,
+            inspectedPlayerTurnsInJail,
+            inspectedPlayerOwnedCells,
+            inspectedPlayerOwnedCellsPreview,
+            inspectedPlayerMortgagedCellCount,
+            inspectedPlayerLinkedEventCount,
+            inspectedPlayerCanBeTradeTarget,
+            inspectedPlayerIsSelectedTradeTarget,
+            inspectedPlayerTradeMessage,
+            inspectedPlayerDebtMessage,
+          },
+          actionState: {
+            pendingPurchaseCell,
+            pendingPurchasePlayer,
+            pendingPurchase,
+            canResolvePurchase,
+            pendingAuction,
+            pendingAuctionCell,
+            pendingAuctionActivePlayer,
+            canBidInAuction,
+            minimumAuctionBid,
+            pendingTrade,
+            pendingTradeCell,
+            pendingTradeReceiver,
+            canAcceptTrade,
+            canRejectTrade,
+            pendingBankruptcy,
+            pendingBankruptcyPlayer,
+            pendingBankruptcyCreditorLabel,
+            canManageDebtRecovery,
+            isCurrentPlayerInJail,
+            currentPlayerTurnsInJail,
+            canPayJailFine,
+            canAffordJailFine,
+            canDeclareBankruptcy,
+            currentPlayerDoublesStreak,
+            canRollDice,
+          },
+          auctionState: {
+            pendingAuctionInitiator,
+            pendingAuctionHighestBidder,
+            pendingAuctionPassedPlayers,
+            auctionBidAmount,
+            currentPlayerCash,
+            canAffordAuctionBid,
+            canPassAuction,
+          },
+          tradeState: {
+            showTradeDesk,
+            tradeDeskState,
+            tradeDeskCollapsed,
+            pendingTradeProposer,
+            canShowTradeForm,
+            canManageDebtRecovery,
+            tradeableCells,
+            selectedTradePosition,
+            tradeTargets,
+            selectedTradeTargetId,
+            tradeCashAmount,
+            canProposeTrade,
+          },
+          mortgageState: {
+            showMortgageDesk,
+            mortgageDeskState,
+            mortgageDeskCollapsed,
+            showMortgageLists,
+            mortgageableCells,
+            unmortgageableCells,
+            canManageMortgages,
+            canUnmortgageProperties,
+          },
+          upgradeState: {
+            showUpgradeDesk,
+            upgradeDeskState,
+            upgradeDeskCollapsed,
+            showUpgradeLists,
+            upgradeableProperties,
+            sellableProperties,
+            propertyLevels,
+            canUpgradeProperties,
+            canSellUpgrades,
+          },
+          recentEventsState: {
+            priorRecentEvents,
+            selectedKind: getRecentEventsSelectedKind("game"),
+            expandedGroups: getRecentEventsExpandedState("game"),
+            freshRecentEventIds,
+            focusedRecentEventId,
+            recentEventsEntityFilter,
+            isRecentEventsHelpCollapsed,
+            recentEventsClearFocusAnnouncementId,
+          },
+          boardState: {
+            boardCells,
+            playerPositions: renderedPlayerPositions,
+            cellRecentEventCounts,
+            propertyOwners,
+            propertyMortgaged,
+            propertyLevels,
+            focusedEventCellIndex,
+            movedCellIndexSet,
+            getPlayerById,
+            playerRecentEventCounts,
+            currentTurnPlayerId,
+            focusedPlayerIdSet,
+            getPlayerPosition,
+            getPlayerCell,
+            getOwnedCellsByPlayer,
+            getMortgagedOwnedCellCount,
+          },
+          helpers: {
+            formatCellType,
+            getPlayerColor,
+            getMortgageValue,
+            getUpgradeCost,
+            getUnmortgageCost,
+            getUpgradeSellValue,
+            getRentHint,
+            isDeskCollapsible,
+            getActionGuideFlashClassName,
+            getActionGuideFlashStyle,
+            renderPlayerToken,
+          },
+          handlers: {
+            scrollToActionSection,
+            handleResetUiPreferences,
+            clearRecentEventFocus,
+            handleBuyProperty,
+            handleSkipPurchase,
+            handleUpgradeProperty,
+            handleSellUpgradeProperty,
+            handleMortgageProperty,
+            handleUnmortgageProperty,
+            handlePayJailFine,
+            handleDeclareBankruptcy,
+            handleRollDice,
+            handleLeaveRoom,
+            handleBidInAuction,
+            handlePassAuction,
+            handleRespondTrade,
+            handleProposeTrade,
+            handleRecentEventsKindChange,
+            handleRecentEventsGroupToggle,
+            handleRecentEventFocus,
+            handleRecentEventsHelpToggle,
+            handleBoardCellFocus,
+            handlePlayerCardFocus,
+            handleSelectCellForTrade,
+            handleSelectPlayerAsTradeTarget,
+          },
+          setters: {
+            setSelectedTradePosition,
+            setSelectedTradeTargetId,
+            setAuctionBidAmount,
+            setTradeCashAmount,
+            toggleDeskCollapsed,
+          },
+          refs: {
+            setActionSectionRef,
+            boardCellRefs,
+            playerCardRefs,
+          },
+          constants: {
+            maxPropertyLevel: MAX_PROPERTY_LEVEL,
+            jailFineAmount: JAIL_FINE_AMOUNT,
+            jailPosition: JAIL_POSITION,
+          },
+        })
+      : null;
+
   return (
     <main className={`app-shell${isGameOpen || isEliminated ? " is-game" : ""}`}>
       <section className="panel">
@@ -2747,406 +3050,7 @@ function App() {
           />
         )}
 
-        {currentRoom && isGameOpen && currentPlayer && (
-          <GameView
-            roomCode={currentRoom.room_code}
-            turnNumber={currentRoom.game?.turn.turn_number}
-            playerId={playerId}
-            boardCenterSummaryProps={{
-              currentTurnPlayerName: currentTurnPlayer?.nickname ?? "Unknown player",
-              lastRollText: currentRoom.game?.turn.last_roll
-                ? currentRoom.game.turn.last_roll.join(" + ")
-                : "No roll yet",
-              landedSummary: lastLandedCell
-                ? `${lastLandedPlayer?.nickname ?? "Player"} landed on ${lastLandedCell.name}`
-                : "No landing yet",
-              lastLandedCell,
-              lastLandedCellTypeLabel: lastLandedCell
-                ? formatCellType(lastLandedCell.cell_type)
-                : "",
-              lastLandedRentHint,
-              lastLandedLevel: lastLandedCellLevel,
-              maxPropertyLevel: MAX_PROPERTY_LEVEL,
-              lastLandedAmountLabel:
-                lastLandedCell &&
-                !lastLandedCell.price &&
-                typeof lastLandedCell.amount === "number"
-                  ? lastLandedCell.cell_type === "tax"
-                    ? `-$${lastLandedCell.amount}`
-                    : `+$${lastLandedCell.amount}`
-                  : null,
-              lastLandedOwnerName: lastLandedCellOwner?.nickname ?? null,
-              isLastLandedMortgaged: lastLandedCellMortgaged,
-              lastEffects,
-            }}
-            actionGuideCardProps={{
-              actionGuide,
-              hasStoredUiPreference,
-              jumpButtonLabel: actionGuide.targetKey
-                ? buildActionGuideJumpButtonLabel(actionGuide.targetKey)
-                : "",
-              onJump: () => scrollToActionSection(actionGuide.targetKey, actionGuide.focusKey),
-              onResetUiPreferences: handleResetUiPreferences,
-            }}
-            selectedCellInspectorProps={
-              inspectedCell
-                ? {
-                    cell: inspectedCell,
-                    ownerPlayer: inspectedCellOwner,
-                    ownerColor: inspectedCellOwner
-                      ? getPlayerColor(inspectedCellOwner.player_id)
-                      : null,
-                    cellTypeLabel: formatCellType(inspectedCell.cell_type),
-                    rentHint: inspectedCellRentHint,
-                    isMortgaged: inspectedCellMortgaged,
-                    mortgageValue: getMortgageValue(inspectedCell) ?? 0,
-                    propertyLevel: inspectedCellLevel,
-                    maxPropertyLevel: MAX_PROPERTY_LEVEL,
-                    upgradeCost: getUpgradeCost(inspectedCell) ?? 0,
-                    occupants: inspectedCellOccupants,
-                    linkedEventCount: inspectedCellLinkedEventCount,
-                    jailGroups: inspectedCellJailGroups,
-                    quickActionMessage: inspectedCellQuickActionMessage,
-                    isSubmitting,
-                    canBuy: inspectedCellCanBuy,
-                    canSkipPurchase: inspectedCellCanSkipPurchase,
-                    canUpgrade: inspectedCellCanUpgrade,
-                    canSellUpgrade: inspectedCellCanSellUpgrade,
-                    canMortgage: inspectedCellCanMortgage,
-                    canUnmortgage: inspectedCellCanUnmortgage,
-                    canUseTradeDesk: inspectedCellCanUseTradeDesk,
-                    isSelectedInTradeDesk: inspectedCellIsSelectedInTradeDesk,
-                    onClear: clearRecentEventFocus,
-                    onBuyProperty: handleBuyProperty,
-                    onSkipPurchase: handleSkipPurchase,
-                    onUpgrade: () => handleUpgradeProperty(inspectedCell.index),
-                    onSellUpgrade: () => handleSellUpgradeProperty(inspectedCell.index),
-                    onMortgage: () => handleMortgageProperty(inspectedCell.index),
-                    onUnmortgage: () => handleUnmortgageProperty(inspectedCell.index),
-                    onSelectForTrade: () => {
-                      setSelectedTradePosition(String(inspectedCell.index));
-                      setStatus(
-                        inspectedCellIsSelectedInTradeDesk
-                          ? `${inspectedCell.name} is already selected in the trade desk.`
-                          : `Prepared ${inspectedCell.name} in the trade desk below.`,
-                      );
-                    },
-                  }
-                : null
-            }
-
-            selectedPlayerInspectorProps={
-              inspectedPlayer
-                ? {
-                    player: inspectedPlayer,
-                    currentPlayerId: playerId,
-                    playerColor: inspectedPlayerColor,
-                    isCurrentTurn: inspectedPlayerIsCurrentTurn,
-                    cash: inspectedPlayerCash,
-                    position: inspectedPlayerPosition,
-                    cell: inspectedPlayerCell,
-                    isPendingBankruptcy:
-                      pendingBankruptcy?.player_id === inspectedPlayer.player_id,
-                    isInJail: inspectedPlayerInJail,
-                    turnsInJail: inspectedPlayerTurnsInJail,
-                    ownedCells: inspectedPlayerOwnedCells,
-                    ownedCellsPreview: inspectedPlayerOwnedCellsPreview,
-                    mortgagedCellCount: inspectedPlayerMortgagedCellCount,
-                    linkedEventCount: inspectedPlayerLinkedEventCount,
-                    canBeTradeTarget: inspectedPlayerCanBeTradeTarget,
-                    isSelectedTradeTarget: inspectedPlayerIsSelectedTradeTarget,
-                    isSubmitting,
-                    onClear: clearRecentEventFocus,
-                    onSelectTradeTarget: () => {
-                      setSelectedTradeTargetId(inspectedPlayer.player_id);
-                      setStatus(
-                        inspectedPlayerIsSelectedTradeTarget
-                          ? `${inspectedPlayer.nickname} is already selected in the trade form.`
-                          : `Prepared ${inspectedPlayer.nickname} in the trade form below.`,
-                      );
-                    },
-                    tradeMessage: inspectedPlayerTradeMessage,
-                    debtMessage: inspectedPlayerDebtMessage,
-                  }
-                : null
-            }
-            bankruptcySummaryProps={
-              lastBankruptcySummary
-                ? {
-                    summary: lastBankruptcySummary,
-                    title: "Latest bankruptcy recap",
-                  }
-                : null
-            }
-            boardCenterActionsProps={{
-              sectionRef: (element) => setActionSectionRef("actions", element),
-              className: `room-actions board-center-actions board-center-focus-target ${
-                actionGuide.targetKey === "actions" ? "is-guide-target" : ""
-              } ${getActionGuideFlashClassName("actions")}`,
-              style: getActionGuideFlashStyle("actions"),
-              pendingPurchaseCell,
-              pendingPurchasePlayer,
-              pendingPurchase,
-              canResolvePurchase,
-              pendingAuction,
-              pendingAuctionCell,
-              pendingAuctionActivePlayer,
-              canBidInAuction,
-              minimumAuctionBid,
-              pendingTrade,
-              pendingTradeCell,
-              pendingTradeReceiver,
-              canAcceptTrade,
-              canRejectTrade,
-              playerId,
-              pendingBankruptcy,
-              pendingBankruptcyPlayer,
-              pendingBankruptcyCreditorLabel,
-              canManageDebtRecovery,
-              isCurrentPlayerInJail,
-              currentPlayerTurnsInJail,
-              jailFineAmount: JAIL_FINE_AMOUNT,
-              canPayJailFine,
-              canAffordJailFine,
-              canDeclareBankruptcy,
-              currentPlayerDoublesStreak,
-              isSubmitting,
-              canRollDice,
-              onPayJailFine: handlePayJailFine,
-              onDeclareBankruptcy: handleDeclareBankruptcy,
-              onRollDice: handleRollDice,
-              onBuyProperty: handleBuyProperty,
-              onSkipPurchase: handleSkipPurchase,
-              onLeaveRoom: handleLeaveRoom,
-            }}
-
-            pendingPurchaseCardProps={
-              pendingPurchaseCell
-                ? {
-                    sectionRef: (element) => setActionSectionRef("purchase", element),
-                    className: `purchase-card board-center-section board-center-focus-target ${
-                      actionGuide.targetKey === "purchase" ? "is-guide-target" : ""
-                    } ${getActionGuideFlashClassName("purchase")}`,
-                    style: getActionGuideFlashStyle("purchase"),
-                    playerName: pendingPurchasePlayer?.nickname ?? "A player",
-                    cellName: pendingPurchaseCell.name,
-                    price: pendingPurchase?.price,
-                    cellTypeLabel: formatCellType(pendingPurchaseCell.cell_type),
-                  }
-                : null
-            }
-            auctionCardProps={
-              pendingAuction
-                ? {
-                    sectionRef: (element) => setActionSectionRef("auction", element),
-                    className: `trade-card board-center-section board-center-focus-target ${
-                      actionGuide.targetKey === "auction" ? "is-guide-target" : ""
-                    } ${getActionGuideFlashClassName("auction")}`,
-                    style: getActionGuideFlashStyle("auction"),
-                    cellName: pendingAuctionCell?.name ?? pendingAuction.cell_name,
-                    initiatorName: pendingAuctionInitiator?.nickname ?? "the active player",
-                    cellTypeLabel: formatCellType(
-                      pendingAuctionCell?.cell_type ?? pendingAuction.cell_type,
-                    ),
-                    printedPrice: pendingAuction.price,
-                    currentBid: pendingAuction.current_bid,
-                    highestBidderName:
-                      pendingAuctionHighestBidder?.nickname ?? "No bids yet",
-                    activePlayerName: pendingAuctionActivePlayer?.nickname ?? "Waiting",
-                    passedPlayerNames: pendingAuctionPassedPlayers.map(
-                      (player) => player.nickname,
-                    ),
-                    canBid: canBidInAuction,
-                    bidAmount: auctionBidAmount,
-                    minimumBid: minimumAuctionBid,
-                    currentPlayerCash,
-                    canAffordBid: canAffordAuctionBid,
-                    canPass: canPassAuction,
-                    isSubmitting,
-                    onBidAmountChange: setAuctionBidAmount,
-                    onPlaceBid: handleBidInAuction,
-                    onPass: handlePassAuction,
-                  }
-                : null
-            }
-            tradeDeskCardProps={
-              showTradeDesk
-                ? {
-                    sectionRef: (element) => setActionSectionRef("trade", element),
-                    className: `trade-card board-center-section board-center-focus-target ${
-                      actionGuide.targetKey === "trade" ? "is-guide-target" : ""
-                    } ${getActionGuideFlashClassName("trade")}`,
-                    style: getActionGuideFlashStyle("trade"),
-                    statusLabel: tradeDeskState.statusLabel,
-                    statusTone: tradeDeskState.statusTone,
-                    note: tradeDeskState.note,
-                    isCollapsible: isDeskCollapsible(tradeDeskState.statusTone),
-                    isCollapsed: tradeDeskCollapsed,
-                    onToggleCollapse: () => toggleDeskCollapsed("trade"),
-                    pendingTrade,
-                    pendingTradeProposerName: pendingTradeProposer?.nickname ?? "A player",
-                    pendingTradeCellName:
-                      pendingTradeCell?.name ?? pendingTrade?.cell_name ?? "",
-                    pendingTradeReceiverName:
-                      pendingTradeReceiver?.nickname ?? "the receiving player",
-                    pendingTradeCashAmount: pendingTrade?.cash_amount ?? 0,
-                    pendingTradeCellTypeLabel: pendingTrade
-                      ? formatCellType(pendingTradeCell?.cell_type ?? pendingTrade.cell_type)
-                      : "",
-                    canAcceptTrade,
-                    canRejectTrade,
-                    rejectTradeLabel:
-                      pendingTrade?.proposer_id === playerId ? "Cancel offer" : "Reject trade",
-                    isSubmitting,
-                    onAcceptTrade: () => handleRespondTrade(true),
-                    onRejectTrade: () => handleRespondTrade(false),
-                    canShowTradeForm,
-                    canManageDebtRecovery,
-                    tradeableCells,
-                    selectedTradePosition,
-                    onSelectedTradePositionChange: setSelectedTradePosition,
-                    tradeTargets,
-                    selectedTradeTargetId,
-                    onSelectedTradeTargetIdChange: setSelectedTradeTargetId,
-                    tradeCashAmount,
-                    onTradeCashAmountChange: setTradeCashAmount,
-                    canProposeTrade,
-                    onProposeTrade: handleProposeTrade,
-                  }
-                : null
-            }
-
-            mortgageDeskCardProps={
-              showMortgageDesk
-                ? {
-                    sectionRef: (element) => setActionSectionRef("mortgage", element),
-                    className: `mortgage-card board-center-section board-center-focus-target ${
-                      actionGuide.targetKey === "mortgage" ? "is-guide-target" : ""
-                    } ${getActionGuideFlashClassName("mortgage")}`,
-                    style: getActionGuideFlashStyle("mortgage"),
-                    statusLabel: mortgageDeskState.statusLabel,
-                    statusTone: mortgageDeskState.statusTone,
-                    note: mortgageDeskState.note,
-                    isCollapsible: isDeskCollapsible(mortgageDeskState.statusTone),
-                    isCollapsed: mortgageDeskCollapsed,
-                    onToggleCollapse: () => toggleDeskCollapsed("mortgage"),
-                    showLists: showMortgageLists,
-                    canManageDebtRecovery,
-                    mortgageableCells,
-                    unmortgageableCells,
-                    isSubmitting,
-                    canManageMortgages,
-                    canUnmortgageProperties,
-                    getMortgageValue,
-                    getUnmortgageCost,
-                    onMortgage: handleMortgageProperty,
-                    onUnmortgage: handleUnmortgageProperty,
-                  }
-                : null
-            }
-            upgradesDeskCardProps={
-              showUpgradeDesk
-                ? {
-                    sectionRef: (element) => setActionSectionRef("upgrade", element),
-                    className: `upgrade-card board-center-section board-center-focus-target ${
-                      actionGuide.targetKey === "upgrade" ? "is-guide-target" : ""
-                    } ${getActionGuideFlashClassName("upgrade")}`,
-                    style: getActionGuideFlashStyle("upgrade"),
-                    statusLabel: upgradeDeskState.statusLabel,
-                    statusTone: upgradeDeskState.statusTone,
-                    note: upgradeDeskState.note,
-                    isCollapsible: isDeskCollapsible(upgradeDeskState.statusTone),
-                    isCollapsed: upgradeDeskCollapsed,
-                    onToggleCollapse: () => toggleDeskCollapsed("upgrade"),
-                    showLists: showUpgradeLists,
-                    canManageDebtRecovery,
-                    upgradeableProperties,
-                    sellableProperties,
-                    propertyLevels,
-                    isSubmitting,
-                    canUpgradeProperties,
-                    canSellUpgrades,
-                    getUpgradeCost,
-                    getUpgradeSellValue,
-                    getRentHint,
-                    formatCellType,
-                    onUpgrade: handleUpgradeProperty,
-                    onSellUpgrade: handleSellUpgradeProperty,
-                  }
-                : null
-            }
-            recentEventsCardProps={{
-              events: priorRecentEvents,
-              title: "Recent events",
-              maxGroups: 4,
-              selectedKind: getRecentEventsSelectedKind("game"),
-              expandedGroups: getRecentEventsExpandedState("game"),
-              freshEventIds: freshRecentEventIds,
-              focusedEventId: focusedRecentEventId,
-              entityFilter: recentEventsEntityFilter,
-              onSelectKind: (kind) => handleRecentEventsKindChange("game", kind),
-              onToggleGroup: (groupKey) => handleRecentEventsGroupToggle("game", groupKey),
-              onFocusEvent: handleRecentEventFocus,
-              onClearFocus: clearRecentEventFocus,
-              showNavigationHelp: true,
-              isNavigationHelpCollapsed: isRecentEventsHelpCollapsed,
-              onToggleNavigationHelp: handleRecentEventsHelpToggle,
-              announceUpdates: true,
-              clearFocusAnnouncementId: recentEventsClearFocusAnnouncementId,
-            }}
-            drawnCard={lastDrawnCard}
-            boardTilesLayerProps={{
-              boardCells,
-              players: currentRoom.players,
-              playerPositions,
-              inJailByPlayer: currentRoom.game?.in_jail ?? {},
-              jailPosition: JAIL_POSITION,
-              cellRecentEventCounts,
-              propertyOwners,
-              propertyMortgaged,
-              propertyLevels,
-              lastLandedCellIndex: lastLandedCell?.index ?? null,
-              focusedEventCellIndex,
-              movedCellIndexSet,
-              currentPlayerId: playerId,
-              getPlayerById,
-              getPlayerColor,
-              onTileRef: (cellIndex, element) => {
-                if (element) {
-                  boardCellRefs.current[cellIndex] = element;
-                } else {
-                  delete boardCellRefs.current[cellIndex];
-                }
-              },
-              onFocusCell: handleBoardCellFocus,
-              renderPlayerToken,
-            }}
-            boardPlayersGridProps={{
-              players: currentRoom.players,
-              playerRecentEventCounts,
-              selectedTradeTargetId,
-              currentTurnPlayerId,
-              inJailByPlayer: currentRoom.game?.in_jail ?? {},
-              currentPlayerId: playerId,
-              cashByPlayer: currentRoom.game?.cash ?? {},
-              focusedPlayerIdSet,
-              propertyLevels,
-              getPlayerPosition,
-              getPlayerCell,
-              getRentHint,
-              getOwnedCellsByPlayer,
-              getMortgagedOwnedCellCount,
-              onFocusPlayer: handlePlayerCardFocus,
-              onPlayerCardRef: (playerIdValue, element) => {
-                if (element) {
-                  playerCardRefs.current[playerIdValue] = element;
-                } else {
-                  delete playerCardRefs.current[playerIdValue];
-                }
-              },
-            }}
-          />
-        )}
+        {gameViewProps && <GameView {...gameViewProps} />}
       </section>
     </main>
   );

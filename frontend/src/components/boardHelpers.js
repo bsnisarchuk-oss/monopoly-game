@@ -1,4 +1,7 @@
-const TOKEN_MOVE_MAX_OFFSET_PX = 26;
+const BOARD_CELL_COUNT = 40;
+const MAX_STEP_ANIMATED_DISTANCE = 12;
+const TOKEN_MOVE_STEP_PX = 70;
+const TOKEN_MOVE_MAX_OFFSET_PX = 84;
 
 export function getBoardPlacement(index) {
   if (index >= 0 && index <= 10) {
@@ -40,6 +43,34 @@ function clampNumber(value, min, max) {
   return Math.min(max, Math.max(min, value));
 }
 
+function getForwardBoardDistance(fromPosition, toPosition) {
+  return (toPosition - fromPosition + BOARD_CELL_COUNT) % BOARD_CELL_COUNT;
+}
+
+export function buildTokenMovementPath(fromPosition, toPosition, preferredStepCount = null) {
+  if (
+    !Number.isInteger(fromPosition) ||
+    !Number.isInteger(toPosition) ||
+    fromPosition === toPosition
+  ) {
+    return [];
+  }
+
+  const forwardDistance = getForwardBoardDistance(fromPosition, toPosition);
+  const shouldAnimateStepByStep =
+    Number.isInteger(preferredStepCount) && preferredStepCount > 0
+      ? forwardDistance === preferredStepCount
+      : forwardDistance > 0 && forwardDistance <= MAX_STEP_ANIMATED_DISTANCE;
+
+  if (!shouldAnimateStepByStep) {
+    return [toPosition];
+  }
+
+  return Array.from({ length: forwardDistance }, (_, index) =>
+    (fromPosition + index + 1) % BOARD_CELL_COUNT,
+  );
+}
+
 export function getTokenMovementOffset(fromPosition, toPosition) {
   if (
     !Number.isInteger(fromPosition) ||
@@ -54,12 +85,12 @@ export function getTokenMovementOffset(fromPosition, toPosition) {
 
   return {
     x: clampNumber(
-      (fromPlacement.column - toPlacement.column) * 10,
+      (fromPlacement.column - toPlacement.column) * TOKEN_MOVE_STEP_PX,
       -TOKEN_MOVE_MAX_OFFSET_PX,
       TOKEN_MOVE_MAX_OFFSET_PX,
     ),
     y: clampNumber(
-      (fromPlacement.row - toPlacement.row) * 10,
+      (fromPlacement.row - toPlacement.row) * TOKEN_MOVE_STEP_PX,
       -TOKEN_MOVE_MAX_OFFSET_PX,
       TOKEN_MOVE_MAX_OFFSET_PX,
     ),

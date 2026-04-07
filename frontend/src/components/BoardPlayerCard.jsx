@@ -1,4 +1,5 @@
 import { formatLinkedEventCount } from "./recentEventsHelpers";
+import { getPlayerTokenLabel, hexToRgba } from "./utils";
 
 function BoardPlayerCard({
   player,
@@ -15,16 +16,31 @@ function BoardPlayerCard({
   cash = 0,
   ownedCellCount = 0,
   mortgagedCellCount = 0,
+  playerColor = null,
   statusLabel,
   onFocus,
   cardRef,
 }) {
+  const statusToneClass = isCurrentTurn
+    ? "is-active"
+    : statusLabel === "In jail"
+      ? "is-warning"
+      : "is-neutral";
+  const playerCardStyle = playerColor
+    ? {
+        "--player-card-accent": playerColor,
+        "--player-card-accent-soft": hexToRgba(playerColor, 0.2),
+        "--player-card-accent-strong": hexToRgba(playerColor, 0.34),
+      }
+    : undefined;
+
   return (
     <article
       ref={cardRef}
       className={`board-card ${isYou ? "is-you" : ""} ${isFocused ? "is-focused" : ""} ${
         isTradeTarget ? "is-trade-target" : ""
       } ${isCurrentTurn ? "is-current-turn" : ""}`}
+      style={playerCardStyle}
       role="button"
       tabIndex={0}
       onClick={onFocus}
@@ -35,8 +51,14 @@ function BoardPlayerCard({
         }
       }}
     >
-      <div className="board-card-header">
-        <h3>{player.nickname}</h3>
+      <div className="board-card-topline">
+        <div className="board-card-avatar" aria-hidden="true">
+          {getPlayerTokenLabel(player.nickname)}
+        </div>
+        <div className="board-card-identity">
+          <p className="board-card-kicker">{isYou ? "You" : "Player"}</p>
+          <h3>{player.nickname}</h3>
+        </div>
         <div className="board-card-badges">
           {isTradeTarget && (
             <span className="board-card-target-badge">Trade target</span>
@@ -52,29 +74,26 @@ function BoardPlayerCard({
           )}
         </div>
       </div>
-      <p>
-        On: <strong>{playerCellName}</strong>
-      </p>
-      {showUpgradeLevel && (
+      <p className="board-card-cash">${cash}</p>
+      <div className="board-card-stats">
         <p>
-          Upgrade level: <strong>{playerLevel}</strong>
+          On <strong>{playerCellName}</strong>
         </p>
-      )}
-      {playerRentHint && (
-        <p><strong>{playerRentHint}</strong></p>
-      )}
-      <p>
-        Cash: <strong>${cash}</strong>
-      </p>
-      <p>
-        Owned cells: <strong>{ownedCellCount}</strong>
-      </p>
-      <p>
-        Mortgaged cells: <strong>{mortgagedCellCount}</strong>
-      </p>
-      <p>
-        Status: <strong>{statusLabel}</strong>
-      </p>
+        {showUpgradeLevel && (
+          <p>
+            Upgrade level <strong>{playerLevel}</strong>
+          </p>
+        )}
+        {playerRentHint && <p>{playerRentHint}</p>}
+        <p>
+          Owned <strong>{ownedCellCount}</strong> &middot; Mortgaged{" "}
+          <strong>{mortgagedCellCount}</strong>
+        </p>
+      </div>
+      <div className="board-card-footer">
+        <span className={`board-card-status-pill ${statusToneClass}`}>{statusLabel}</span>
+        <span className="board-card-focus-hint">Press Enter to inspect</span>
+      </div>
     </article>
   );
 }
