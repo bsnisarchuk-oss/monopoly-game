@@ -24,8 +24,6 @@ function BoardCellTile({
   isFocused = false,
   isMoveTarget = false,
   isOwnedByYou = false,
-  linkedEventCount = 0,
-  linkedEventLabel,
   ownerPlayer = null,
   tileStyle,
   isMortgaged = false,
