@@ -12,7 +12,6 @@ import LandingPanel from "./components/LandingPanel";
 import LobbyView from "./components/LobbyView";
 import PlayerToken from "./components/PlayerToken";
 import {
-  buildTokenMovementPath,
   getTokenMovementOffset,
   splitJailOccupants,
 } from "./components/boardHelpers";
@@ -21,18 +20,17 @@ import {
   filterRecentEventsByKind,
   hasRecentEventReferences,
 } from "./components/recentEventsHelpers";
+import { useDeskCollapse } from "./hooks/useDeskCollapse";
+import { useTokenMovement } from "./hooks/useTokenMovement";
 
 const API_BASE_URL = "http://127.0.0.1:8000";
 const SESSION_STORAGE_KEY = "monopoly_player_session";
 const RECENT_EVENTS_HELP_COLLAPSED_KEY = "monopoly_recent_events_help_collapsed";
-const DESK_COLLAPSED_SECTIONS_KEY = "monopoly_collapsed_desk_sections";
 const JAIL_FINE_AMOUNT = 50;
 const MAX_PROPERTY_LEVEL = 4;
 const JAIL_POSITION = 10;
 const PROPERTY_RENT_MULTIPLIERS = [1, 2, 4, 7, 11];
 const RECENT_EVENT_HIGHLIGHT_MS = 4500;
-const TOKEN_MOVE_STEP_MS = 280;
-const TOKEN_MOVE_FINISH_BUFFER_MS = 60;
 const MOBILE_RECENT_EVENTS_BREAKPOINT = "(max-width: 640px)";
 const PLAYER_TOKEN_COLORS = ["#d94f3d", "#3b7fd4", "#3aaa5e", "#e09b2a"];
 const ACTION_GUIDE_FLASH_MS = 900;
@@ -120,59 +118,6 @@ function clearStoredRecentEventsHelpCollapsed() {
   window.localStorage.removeItem(RECENT_EVENTS_HELP_COLLAPSED_KEY);
 }
 
-function loadStoredCollapsedDeskSections() {
-  if (typeof window === "undefined") {
-    return {};
-  }
-
-  const rawValue = window.localStorage.getItem(DESK_COLLAPSED_SECTIONS_KEY);
-
-  if (rawValue == null) {
-    return {};
-  }
-
-  try {
-    const parsedValue = JSON.parse(rawValue);
-
-    if (!parsedValue || typeof parsedValue !== "object" || Array.isArray(parsedValue)) {
-      window.localStorage.removeItem(DESK_COLLAPSED_SECTIONS_KEY);
-      return {};
-    }
-
-    return Object.fromEntries(
-      Object.entries(parsedValue).filter(
-        ([sectionKey, isCollapsed]) => typeof sectionKey === "string" && typeof isCollapsed === "boolean",
-      ),
-    );
-  } catch {
-    window.localStorage.removeItem(DESK_COLLAPSED_SECTIONS_KEY);
-    return {};
-  }
-}
-
-function saveStoredCollapsedDeskSections(collapsedSections) {
-  if (typeof window === "undefined") {
-    return;
-  }
-
-  if (Object.keys(collapsedSections).length === 0) {
-    clearStoredCollapsedDeskSections();
-    return;
-  }
-
-  window.localStorage.setItem(
-    DESK_COLLAPSED_SECTIONS_KEY,
-    JSON.stringify(collapsedSections),
-  );
-}
-
-function clearStoredCollapsedDeskSections() {
-  if (typeof window === "undefined") {
-    return;
-  }
-
-  window.localStorage.removeItem(DESK_COLLAPSED_SECTIONS_KEY);
-}
 
 function getDefaultRecentEventsHelpCollapsed() {
   const storedPreference = loadStoredRecentEventsHelpCollapsed();
@@ -284,14 +229,10 @@ function App() {
   const [selectedTradePosition, setSelectedTradePosition] = useState("");
   const [tradeCashAmount, setTradeCashAmount] = useState("0");
   const [auctionBidAmount, setAuctionBidAmount] = useState("1");
-  const [movingTokenEffects, setMovingTokenEffects] = useState({});
   const [actionGuideFlash, setActionGuideFlash] = useState({ sectionKey: null, pulseId: 0 });
-  const [collapsedDeskSections, setCollapsedDeskSections] = useState(loadStoredCollapsedDeskSections);
   const recentEventsRoomCodeRef = useRef(null);
   const highestSeenRecentEventIdRef = useRef(0);
   const recentEventHighlightTimeoutsRef = useRef({});
-  const tokenMovementTimeoutsRef = useRef({});
-  const previousPositionsRef = useRef({});
   const boardCellRefs = useRef({});
   const playerCardRefs = useRef({});
   const actionSectionRefs = useRef({});
@@ -319,7 +260,21 @@ function App() {
     currentRoom?.players.find((player) => player.player_id === winnerId) ?? null;
   const currentPlayer =
     currentRoom?.players.find((player) => player.player_id === playerId) ?? null;
-  const hasStoredCollapsedDeskPreference = Object.keys(collapsedDeskSections).length > 0;
+
+  const {
+    movingTokenEffects,
+    movedCellIndexSet,
+    renderedPlayerPositions,
+  } = useTokenMovement({ currentRoom, currentRoomCode, playerPositions });
+
+  const {
+    hasStoredCollapsedDeskPreference,
+    isDeskCollapsible,
+    isDeskCollapsed,
+    toggleDeskCollapsed,
+    handleResetDeskLayout,
+  } = useDeskCollapse();
+
   const hasStoredUiPreference = hasStoredCollapsedDeskPreference || hasStoredHelpPreference;
   const isEliminated = Boolean(currentRoom && isGameOpen && playerId && !currentPlayer);
   const isHost = currentPlayer?.is_host ?? false;
@@ -426,24 +381,6 @@ function App() {
     }
   }
 
-  const movedCellIndexSet = new Set(
-    Object.values(movingTokenEffects)
-      .map((movementEffect) => movementEffect.toPosition)
-      .filter((position) => Number.isInteger(position)),
-  );
-  const renderedPlayerPositions =
-    currentRoom?.players.reduce((positionsByPlayerId, player) => {
-      const animatedPosition = movingTokenEffects[player.player_id]?.displayPosition;
-      const actualPosition = playerPositions?.[player.player_id];
-
-      if (Number.isInteger(animatedPosition)) {
-        positionsByPlayerId[player.player_id] = animatedPosition;
-      } else if (Number.isInteger(actualPosition)) {
-        positionsByPlayerId[player.player_id] = actualPosition;
-      }
-
-      return positionsByPlayerId;
-    }, {}) ?? {};
   const inspectedCell = Number.isInteger(focusedEventCellIndex)
     ? boardCells.find((cell) => cell.index === focusedEventCellIndex) ?? null
     : null;
@@ -740,24 +677,6 @@ function App() {
         isMoving={Boolean(movementEffect)}
       />
     );
-  }
-
-  function clearTokenMovementTimers(targetPlayerId = null) {
-    if (targetPlayerId) {
-      for (const timeoutId of tokenMovementTimeoutsRef.current[targetPlayerId] ?? []) {
-        window.clearTimeout(timeoutId);
-      }
-      delete tokenMovementTimeoutsRef.current[targetPlayerId];
-      return;
-    }
-
-    for (const timeoutIds of Object.values(tokenMovementTimeoutsRef.current)) {
-      for (const timeoutId of timeoutIds) {
-        window.clearTimeout(timeoutId);
-      }
-    }
-
-    tokenMovementTimeoutsRef.current = {};
   }
 
   function ownsFullColorSet(ownerId, colorGroup) {
@@ -1068,43 +987,6 @@ function App() {
     return `${deskLabel} is not available right now.`;
   }
 
-  function isDeskCollapsible(statusTone) {
-    return statusTone === "locked" || statusTone === "empty";
-  }
-
-  function isDeskCollapsed(sectionKey, statusTone) {
-    if (!isDeskCollapsible(statusTone)) {
-      return false;
-    }
-
-    return collapsedDeskSections[sectionKey] ?? true;
-  }
-
-  function toggleDeskCollapsed(sectionKey) {
-    setCollapsedDeskSections((current) => {
-      const nextValue = !(current[sectionKey] ?? true);
-      let nextState;
-
-      if (nextValue) {
-        const { [sectionKey]: _ignoredSection, ...remainingSections } = current;
-        nextState = remainingSections;
-      } else {
-        nextState = {
-          ...current,
-          [sectionKey]: false,
-        };
-      }
-
-      saveStoredCollapsedDeskSections(nextState);
-      return nextState;
-    });
-  }
-
-  function handleResetDeskLayout() {
-    clearStoredCollapsedDeskSections();
-    setCollapsedDeskSections({});
-  }
-
   function handleResetUiPreferences() {
     handleResetDeskLayout();
     handleRecentEventsHelpReset();
@@ -1403,107 +1285,6 @@ function App() {
   }, []);
 
   useEffect(() => {
-    previousPositionsRef.current = {};
-    setMovingTokenEffects({});
-    clearTokenMovementTimers();
-  }, [currentRoomCode]);
-
-  useEffect(() => {
-    if (!currentRoomCode || !currentRoom) {
-      return;
-    }
-
-    const nextKnownPositions = {};
-    const nextMovementEffects = [];
-
-    for (const player of currentRoom.players) {
-      const nextPosition = playerPositions?.[player.player_id];
-
-      if (!Number.isInteger(nextPosition)) {
-        continue;
-      }
-
-      nextKnownPositions[player.player_id] = nextPosition;
-
-      const previousPosition = previousPositionsRef.current[player.player_id];
-      if (Number.isInteger(previousPosition) && previousPosition !== nextPosition) {
-        const rollTotal = (currentRoom.game?.turn?.last_roll ?? []).reduce(
-          (sum, value) => sum + value,
-          0,
-        );
-        const movementPath = buildTokenMovementPath(previousPosition, nextPosition, rollTotal);
-
-        if (movementPath.length === 0) {
-          continue;
-        }
-
-        nextMovementEffects.push({
-          playerId: player.player_id,
-          fromPosition: previousPosition,
-          path: movementPath,
-        });
-      }
-    }
-
-    previousPositionsRef.current = nextKnownPositions;
-
-    if (nextMovementEffects.length === 0) {
-      return;
-    }
-
-    for (const movementEffect of nextMovementEffects) {
-      clearTokenMovementTimers(movementEffect.playerId);
-
-      const timeoutIds = [];
-      const firstStepPosition = movementEffect.path[0];
-
-      setMovingTokenEffects((current) => ({
-        ...current,
-        [movementEffect.playerId]: {
-          animationId: 1,
-          displayPosition: firstStepPosition,
-          fromPosition: movementEffect.fromPosition,
-          toPosition: firstStepPosition,
-        },
-      }));
-
-      movementEffect.path.slice(1).forEach((stepPosition, pathIndex) => {
-        const stepFromPosition = movementEffect.path[pathIndex];
-        const timeoutId = window.setTimeout(() => {
-          setMovingTokenEffects((current) => ({
-            ...current,
-            [movementEffect.playerId]: {
-              animationId: pathIndex + 2,
-              displayPosition: stepPosition,
-              fromPosition: stepFromPosition,
-              toPosition: stepPosition,
-            },
-          }));
-        }, (pathIndex + 1) * TOKEN_MOVE_STEP_MS);
-
-        timeoutIds.push(timeoutId);
-      });
-
-      const cleanupTimeoutId = window.setTimeout(() => {
-        setMovingTokenEffects((current) => {
-          if (!current[movementEffect.playerId]) {
-            return current;
-          }
-
-          const next = { ...current };
-          delete next[movementEffect.playerId];
-          return next;
-        });
-
-        clearTokenMovementTimers(movementEffect.playerId);
-      }, movementEffect.path.length * TOKEN_MOVE_STEP_MS + TOKEN_MOVE_FINISH_BUFFER_MS);
-
-      timeoutIds.push(cleanupTimeoutId);
-      tokenMovementTimeoutsRef.current[movementEffect.playerId] = timeoutIds;
-    }
-  }, [currentRoomCode, currentRoom, playerPositions]);
-
-  useEffect(() => {
     const nextBoardCells = currentRoom?.game?.board ?? [];
     const nextPropertyOwners = currentRoom?.game?.property_owners ?? {};
     const nextPropertyLevels = currentRoom?.game?.property_levels ?? {};
@@ -1751,7 +1532,6 @@ function App() {
   useEffect(() => {
     return () => {
       clearRecentEventHighlightTimeouts();
-      clearTokenMovementTimers();
     };
   }, []);
 
