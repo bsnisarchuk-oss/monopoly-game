@@ -202,6 +202,47 @@ function getRentHint(cell, level = 0) {
   return null;
 }
 
+function getRoomVersion(room) {
+  return Number.isInteger(room?.room_version) ? room.room_version : null;
+}
+
+function shouldApplyIncomingRoomState({
+  nextRoom,
+  prevRoom,
+  activeRoomCode = null,
+  expectedRoomCode = null,
+  allowRoomActivation = false,
+}) {
+  if (!nextRoom?.room_code) {
+    return false;
+  }
+
+  if (expectedRoomCode && nextRoom.room_code !== expectedRoomCode) {
+    return false;
+  }
+
+  if (!prevRoom) {
+    if (activeRoomCode && nextRoom.room_code !== activeRoomCode) {
+      return false;
+    }
+
+    return allowRoomActivation;
+  }
+
+  if (prevRoom.room_code !== nextRoom.room_code) {
+    return false;
+  }
+
+  const nextVersion = getRoomVersion(nextRoom);
+  const prevVersion = getRoomVersion(prevRoom);
+
+  if (nextVersion != null && prevVersion != null) {
+    return nextVersion > prevVersion;
+  }
+
+  return (nextRoom.last_activity ?? 0) > (prevRoom.last_activity ?? 0);
+}
+
 function App() {
   const [message, setMessage] = useState("Loading...");
   const [nickname, setNickname] = useState("");
@@ -239,7 +280,13 @@ function App() {
   const actionGuideLiveStatusRef = useRef(null);
   const actionGuideLiveAnnouncementFrameRef = useRef(null);
   const actionGuideFlashTimeoutRef = useRef(null);
+  const currentRoomRef = useRef(null);
+  const activeRoomCodeRef = useRef(null);
+  const applyIncomingRoomStateRef = useRef(() => false);
+  const clearCurrentRoomStateRef = useRef(() => {});
   const currentRoomCode = currentRoom?.room_code ?? null;
+  currentRoomRef.current = currentRoom;
+  activeRoomCodeRef.current = currentRoomCode;
   const isLobbyOpen = currentRoom?.status === "lobby";
   const isGameOpen = currentRoom?.status === "in_game";
   const isFinished = currentRoom?.status === "finished";
@@ -485,6 +532,31 @@ function App() {
     recentEventsRoomCodeRef.current = null;
     highestSeenRecentEventIdRef.current = 0;
   }
+
+  applyIncomingRoomStateRef.current = (nextRoom, options = {}) => {
+    const shouldApply = shouldApplyIncomingRoomState({
+      nextRoom,
+      prevRoom: currentRoomRef.current,
+      activeRoomCode: activeRoomCodeRef.current,
+      expectedRoomCode: options.expectedRoomCode ?? null,
+      allowRoomActivation: options.allowRoomActivation ?? false,
+    });
+
+    if (!shouldApply) {
+      return false;
+    }
+
+    currentRoomRef.current = nextRoom;
+    activeRoomCodeRef.current = nextRoom.room_code ?? null;
+    setCurrentRoom(nextRoom);
+    return true;
+  };
+
+  clearCurrentRoomStateRef.current = () => {
+    currentRoomRef.current = null;
+    activeRoomCodeRef.current = null;
+    setCurrentRoom(null);
+  };
 
   function handleRecentEventsHelpToggle() {
     setIsRecentEventsHelpCollapsed((current) => {
@@ -1390,7 +1462,10 @@ function App() {
 
         setPlayerId(data.player_id);
         setPlayerToken(data.player_token);
-        setCurrentRoom(data.room);
+        applyIncomingRoomStateRef.current(data.room, {
+          expectedRoomCode: storedSession.room_code,
+          allowRoomActivation: true,
+        });
         setRoomCode(data.room.room_code);
         setStatus(`Welcome back to room ${data.room.room_code}.`);
       })
@@ -1398,7 +1473,7 @@ function App() {
         clearStoredSession();
         setPlayerId("");
         setPlayerToken("");
-        setCurrentRoom(null);
+        clearCurrentRoomStateRef.current();
         setRecentEventsSelectedKinds({});
         setRecentEventsExpandedGroups({});
         setFreshRecentEventIds({});
@@ -1440,7 +1515,7 @@ function App() {
         .then((response) => {
           if (response.status === 404) {
             clearStoredSession();
-            setCurrentRoom(null);
+            clearCurrentRoomStateRef.current();
             setRecentEventsSelectedKinds({});
             setRecentEventsExpandedGroups({});
             setFreshRecentEventIds({});
@@ -1458,7 +1533,11 @@ function App() {
             setStatus("The room no longer exists.");
             return;
           }
-          return response.json().then((data) => setCurrentRoom(data));
+          return response.json().then((data) => {
+            applyIncomingRoomStateRef.current(data, {
+              expectedRoomCode: currentRoomCode,
+            });
+          });
         })
         .catch(() => {});
     }, 2500);
@@ -1576,7 +1655,9 @@ function App() {
 
       setPlayerId(data.player_id);
       setPlayerToken(data.player_token);
-      setCurrentRoom(data.room);
+      applyIncomingRoomStateRef.current(data.room, {
+        allowRoomActivation: true,
+      });
       setRoomCode(data.room.room_code);
       saveStoredSession({
         player_id: data.player_id,
@@ -1629,7 +1710,10 @@ function App() {
 
       setPlayerId(data.player_id);
       setPlayerToken(data.player_token);
-      setCurrentRoom(data.room);
+      applyIncomingRoomStateRef.current(data.room, {
+        expectedRoomCode: trimmedRoomCode,
+        allowRoomActivation: true,
+      });
       setRoomCode(data.room.room_code);
       saveStoredSession({
         player_id: data.player_id,
@@ -1679,7 +1763,9 @@ function App() {
 
       setPlayerId(data.player_id);
       setPlayerToken(data.player_token);
-      setCurrentRoom(data.room);
+      applyIncomingRoomStateRef.current(data.room, {
+        allowRoomActivation: true,
+      });
       saveStoredSession({
         player_id: data.player_id,
         player_token: data.player_token,
@@ -1725,7 +1811,9 @@ function App() {
 
       setPlayerId(data.player_id);
       setPlayerToken(data.player_token);
-      setCurrentRoom(data.room);
+      applyIncomingRoomStateRef.current(data.room, {
+        allowRoomActivation: true,
+      });
       saveStoredSession({
         player_id: data.player_id,
         player_token: data.player_token,
@@ -1771,7 +1859,9 @@ function App() {
 
       setPlayerId(data.player_id);
       setPlayerToken(data.player_token);
-      setCurrentRoom(data.room);
+      applyIncomingRoomStateRef.current(data.room, {
+        allowRoomActivation: true,
+      });
       saveStoredSession({
         player_id: data.player_id,
         player_token: data.player_token,
@@ -1832,7 +1922,9 @@ function App() {
 
       setPlayerId(data.player_id);
       setPlayerToken(data.player_token);
-      setCurrentRoom(data.room);
+      applyIncomingRoomStateRef.current(data.room, {
+        allowRoomActivation: true,
+      });
       saveStoredSession({
         player_id: data.player_id,
         player_token: data.player_token,
@@ -1878,7 +1970,9 @@ function App() {
 
       setPlayerId(data.player_id);
       setPlayerToken(data.player_token);
-      setCurrentRoom(data.room);
+      applyIncomingRoomStateRef.current(data.room, {
+        allowRoomActivation: true,
+      });
       saveStoredSession({
         player_id: data.player_id,
         player_token: data.player_token,
@@ -1898,7 +1992,7 @@ function App() {
       clearStoredSession();
       setPlayerId("");
       setPlayerToken("");
-      setCurrentRoom(null);
+      clearCurrentRoomStateRef.current();
       resetRecentEventsUiState();
       setStatus("You left the match view.");
       return;
@@ -1935,7 +2029,7 @@ function App() {
       clearStoredSession();
       setPlayerId("");
       setPlayerToken("");
-      setCurrentRoom(null);
+      clearCurrentRoomStateRef.current();
       resetRecentEventsUiState();
       setStatus(data.room_deleted ? "You left. The room was deleted." : "You left the room.");
     } catch (error) {
@@ -1976,7 +2070,9 @@ function App() {
 
       setPlayerId(data.player_id);
       setPlayerToken(data.player_token);
-      setCurrentRoom(data.room);
+      applyIncomingRoomStateRef.current(data.room, {
+        allowRoomActivation: true,
+      });
       saveStoredSession({
         player_id: data.player_id,
         player_token: data.player_token,
@@ -2022,7 +2118,9 @@ function App() {
 
       setPlayerId(data.player_id);
       setPlayerToken(data.player_token);
-      setCurrentRoom(data.room);
+      applyIncomingRoomStateRef.current(data.room, {
+        allowRoomActivation: true,
+      });
       saveStoredSession({
         player_id: data.player_id,
         player_token: data.player_token,
@@ -2081,7 +2179,9 @@ function App() {
 
       setPlayerId(data.player_id);
       setPlayerToken(data.player_token);
-      setCurrentRoom(data.room);
+      applyIncomingRoomStateRef.current(data.room, {
+        allowRoomActivation: true,
+      });
       saveStoredSession({
         player_id: data.player_id,
         player_token: data.player_token,
@@ -2133,7 +2233,9 @@ function App() {
 
       setPlayerId(data.player_id);
       setPlayerToken(data.player_token);
-      setCurrentRoom(data.room);
+      applyIncomingRoomStateRef.current(data.room, {
+        allowRoomActivation: true,
+      });
       saveStoredSession({
         player_id: data.player_id,
         player_token: data.player_token,
@@ -2194,7 +2296,9 @@ function App() {
 
       setPlayerId(data.player_id);
       setPlayerToken(data.player_token);
-      setCurrentRoom(data.room);
+      applyIncomingRoomStateRef.current(data.room, {
+        allowRoomActivation: true,
+      });
       saveStoredSession({
         player_id: data.player_id,
         player_token: data.player_token,
@@ -2253,7 +2357,9 @@ function App() {
 
       setPlayerId(data.player_id);
       setPlayerToken(data.player_token);
-      setCurrentRoom(data.room);
+      applyIncomingRoomStateRef.current(data.room, {
+        allowRoomActivation: true,
+      });
       saveStoredSession({
         player_id: data.player_id,
         player_token: data.player_token,
@@ -2312,7 +2418,9 @@ function App() {
 
       setPlayerId(data.player_id);
       setPlayerToken(data.player_token);
-      setCurrentRoom(data.room);
+      applyIncomingRoomStateRef.current(data.room, {
+        allowRoomActivation: true,
+      });
       saveStoredSession({
         player_id: data.player_id,
         player_token: data.player_token,
@@ -2367,7 +2475,9 @@ function App() {
 
       setPlayerId(data.player_id);
       setPlayerToken(data.player_token);
-      setCurrentRoom(data.room);
+      applyIncomingRoomStateRef.current(data.room, {
+        allowRoomActivation: true,
+      });
       saveStoredSession({
         player_id: data.player_id,
         player_token: data.player_token,
@@ -2436,7 +2546,9 @@ function App() {
 
       setPlayerId(data.player_id);
       setPlayerToken(data.player_token);
-      setCurrentRoom(data.room);
+      applyIncomingRoomStateRef.current(data.room, {
+        allowRoomActivation: true,
+      });
       saveStoredSession({
         player_id: data.player_id,
         player_token: data.player_token,
@@ -2489,7 +2601,7 @@ function App() {
 
       setPlayerId(data.player_id);
       setPlayerToken(data.player_token);
-      setCurrentRoom(data.room);
+      applyIncomingRoomStateRef.current(data.room);
       saveStoredSession({
         player_id: data.player_id,
         player_token: data.player_token,

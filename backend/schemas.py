@@ -212,6 +212,8 @@ class RoomResponse(BaseModel):
     min_players_to_start: int
     players: list[PlayerResponse]
     game: GameStateResponse | None = None
+    last_activity: float = 0.0
+    room_version: int = 0
 
 
 class RoomActionResponse(BaseModel):

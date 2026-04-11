@@ -1,25 +1,32 @@
 # AI Handoff
 
 ## Project
+
 Online Monopoly-style learning project with AI-assisted iteration.
 
 ## Stack
+
 - Frontend: React + Vite + JavaScript
 - Backend: Python + FastAPI
 
 ## Paths
+
 - Root: `U:\Monopoly`
 - Frontend: `U:\Monopoly\frontend`
 - Backend: `U:\Monopoly\backend`
 
 ## Run
+
 ### Quick Windows start (одна команда)
+
 ```cmd
 U:\Monopoly\start.bat
 ```
+
 Открывает два окна cmd — бэкенд и фронтенд.
 
 ### Backend (вручную)
+
 ```cmd
 cd U:\Monopoly\backend
 .venv\Scripts\activate.bat
@@ -27,18 +34,21 @@ uvicorn main:app --reload
 ```
 
 ### Frontend (вручную)
+
 ```cmd
 cd U:\Monopoly\frontend
 npm run dev
 ```
 
 ### Open
+
 - Frontend: `http://localhost:5173`
 - Backend docs: `http://127.0.0.1:8000/docs`
 
 ---
 
 ## Verified Current Status
+
 Verified against real files on `2026-04-07`.
 
 - `npm run lint` — OK
@@ -48,6 +58,7 @@ Verified against real files on `2026-04-07`.
 ---
 
 ## Architecture: что нельзя трогать
+
 - **Backend не трогать** — все игровые правила живут там
 - Frontend только рендерит состояние и отправляет actions
 - Сервер авторитетен
@@ -60,6 +71,7 @@ Verified against real files on `2026-04-07`.
 ## Что уже сделано в frontend (актуально на 2026-04-07)
 
 ### Layout
+
 - Три колонки: `game-player-rail (260px)` | `game-main-stage` | `game-side-panel (360px)`
 - При 1100–1380px: side panel уходит под доску внутри `game-main-stage`
 - При ≥1380px: `game-main-stage` — двухколоночный grid (доска + side panel)
@@ -68,6 +80,7 @@ Verified against real files on `2026-04-07`.
 - `game-history-row` выравнивается по колонкам layout на всех брейкпоинтах
 
 ### Доска (`BoardCellTile.jsx`, `BoardTilesLayer.jsx`)
+
 - Клетки: иконки типа (`🚂` `?` `⚡` `🔒` `🚔` `GO` `💰` `♥` `P`) вместо текста для спецклеток
 - Property-клетки: только название по центру
 - Боковые клетки: название вертикально (writing-mode)
@@ -80,6 +93,7 @@ Verified against real files on `2026-04-07`.
 - CSS каскад правильный: `is-owned` → `is-owned-by-you` → `is-move-target` → `is-landed` → `is-focused`
 
 ### Токены (`PlayerToken.jsx`, CSS)
+
 - Чистый круг без буквы (текст убран линтером, `aria-label` сохранён)
 - Несколько фишек на клетке: отступ 3px между ними, по центру клетки (`position: absolute; inset: 0`)
 - На угловых клетках: отступ 4px
@@ -87,12 +101,14 @@ Verified against real files on `2026-04-07`.
 - Шаг: `TOKEN_MOVE_STEP_MS = 280`, буфер `60ms`
 
 ### Карточки игроков (`BoardPlayerCard.jsx`, CSS)
+
 - Компактный размер: padding `12px 14px`, border-radius `18px`
 - Аватарка `44×44px`
 - Пульсирующий ring аватарки у активного игрока (`avatar-active-pulse`)
 - `prefers-reduced-motion` отключает все анимации
 
 ### Prop-building
+
 - `buildGameViewProps()` в `gameViewHelpers.js` — не хук, pure helper
 - `buildFocusTargetProps()` — shared helper для section refs
 - `onSelectForTrade` и `onSelectTradeTarget` → именованные handlers в `App.jsx`:
@@ -101,6 +117,7 @@ Verified against real files on `2026-04-07`.
 - `setStatus` убран из `setters` в gameViewHelpers — больше не проникает в prop helpers
 
 ### Логика доступа к desk
+
 - `canManagePurchaseFunding` — новое условие: игрок текущий + есть `pendingPurchase` + денег меньше чем цена
 - Позволяет открыть MortgageDeskCard и UpgradesDeskCard когда не хватает денег на покупку
 
@@ -108,26 +125,27 @@ Verified against real files on `2026-04-07`.
 
 ## Важные файлы frontend
 
-| Файл | Назначение |
-|------|-----------|
-| `frontend/src/App.jsx` | Оркестрация, state, API, handlers |
-| `frontend/src/index.css` | Все стили |
-| `frontend/src/components/GameView.jsx` | Экран игры |
-| `frontend/src/components/BoardCellTile.jsx` | Одна клетка доски |
-| `frontend/src/components/BoardTilesLayer.jsx` | Все клетки + owner tinting |
-| `frontend/src/components/BoardPlayerCard.jsx` | Карточка игрока в рейле |
-| `frontend/src/components/BoardPlayersGrid.jsx` | Сетка карточек |
-| `frontend/src/components/PlayerToken.jsx` | Фишка |
-| `frontend/src/components/boardHelpers.js` | Движение токенов, grid placement |
-| `frontend/src/components/gameViewHelpers.js` | Prop assembly для GameView |
-| `frontend/src/components/utils.js` | `hexToRgba`, `getPlayerTokenLabel` |
-| `frontend/src/components/ActionGuideCard.jsx` | Гид по действиям |
-| `frontend/src/components/RecentEventsCard.jsx` | История событий |
-| `frontend/src/components/actionGuideHelpers.js` | Логика action guide |
+| Файл                                            | Назначение                         |
+| ----------------------------------------------- | ---------------------------------- |
+| `frontend/src/App.jsx`                          | Оркестрация, state, API, handlers  |
+| `frontend/src/index.css`                        | Все стили                          |
+| `frontend/src/components/GameView.jsx`          | Экран игры                         |
+| `frontend/src/components/BoardCellTile.jsx`     | Одна клетка доски                  |
+| `frontend/src/components/BoardTilesLayer.jsx`   | Все клетки + owner tinting         |
+| `frontend/src/components/BoardPlayerCard.jsx`   | Карточка игрока в рейле            |
+| `frontend/src/components/BoardPlayersGrid.jsx`  | Сетка карточек                     |
+| `frontend/src/components/PlayerToken.jsx`       | Фишка                              |
+| `frontend/src/components/boardHelpers.js`       | Движение токенов, grid placement   |
+| `frontend/src/components/gameViewHelpers.js`    | Prop assembly для GameView         |
+| `frontend/src/components/utils.js`              | `hexToRgba`, `getPlayerTokenLabel` |
+| `frontend/src/components/ActionGuideCard.jsx`   | Гид по действиям                   |
+| `frontend/src/components/RecentEventsCard.jsx`  | История событий                    |
+| `frontend/src/components/actionGuideHelpers.js` | Логика action guide                |
 
 ---
 
 ## Важные файлы backend
+
 - `U:\Monopoly\backend\main.py`
 - `U:\Monopoly\backend\board_data.py` — 40 клеток, только name/cell_type/price/color_group, **нет image_url**
 - `U:\Monopoly\backend\room_store.py`
@@ -137,6 +155,7 @@ Verified against real files on `2026-04-07`.
 ---
 
 ## Что реализовано в игре (backend)
+
 - Комнаты: create / join / leave / rejoin / host transfer
 - Лобби: ready / start
 - Ход: бросок кубиков, doubles, jail, go to jail
@@ -149,6 +168,7 @@ Verified against real files on `2026-04-07`.
 ---
 
 ## Что НЕ реализовано (MVP simplifications)
+
 - Нет WebSocket (polling)
 - Нет БД (in-memory)
 - Нет ботов
@@ -160,16 +180,19 @@ Verified against real files on `2026-04-07`.
 ## Что можно делать дальше
 
 ### Визуал доски (если появятся картинки)
+
 - Добавить `image_url` в `board_data.py` для каждой клетки
 - Создать `frontend/src/components/cellImages.js` — маппинг index → url
 - Рендерить `<img>` внутри `cell-main-content` в `BoardCellTile.jsx`
 
 ### UX / polish
+
 - Отображение названий улиц в боковых клетках можно сократить через `text-overflow: ellipsis`
 - Анимация `avatar-active-pulse` у игрока на доске (сейчас только в рейле)
 - Адаптив ≤780px — проверить новый layout доски на мобиле
 
 ### Код / архитектура
+
 - `App.jsx` всё ещё ~2800 строк — можно выносить большие useEffect-блоки в custom hooks
 - Trade UI упрощён — можно улучшить
 - Нет тестов
@@ -186,6 +209,7 @@ Verified against real files on `2026-04-07`.
 ---
 
 ## Промт для Claude Code
+
 ```
 Прочитай AI_HANDOFF.md, затем проверь реальные файлы.
 Не полагайся только на handoff — верифицируй код перед любыми выводами.
@@ -201,11 +225,16 @@ Verified against real files on `2026-04-07`.
 - есть ли регрессии после последних изменений
 - что стоит улучшить следующим шагом
 - нет ли новых мест где UI-логика протекает не туда
+- если есть ошибки не маскируй их, а обьясни причину
+
+Правила работы:
+- Если контекст становится слишком длинным, если мы начинаем повторяться, если задача меняется по смыслу, или если для качественной работы нужен более чистый контекст — прямо скажи мне, что лучше открыть новый чат, и кратко объясни почему.
 
 Отвечай на русском. Всегда говори что надо исправлять и спрашивай "делаем?" перед реализацией.
 ```
 
 ## Промт для Codex
+
 ```
 Прочитай AI_HANDOFF.md, затем проверь реальные файлы.
 Не полагайся только на handoff.
@@ -220,6 +249,8 @@ Verified against real files on `2026-04-07`.
 - Проверять реальные файлы перед изменениями
 - После изменений: npm run lint && npm run build
 - Объяснять что делаешь и почему
+- если есть ошибки не маскируй их, а обьясни причину
+- Если контекст становится слишком длинным, если мы начинаем повторяться, если задача меняется по смыслу, или если для качественной работы нужен более чистый контекст — прямо скажи мне, что лучше открыть новый чат, и кратко объясни почему.
 
 Текущий приоритет:
 - Доска визуально переработана (иконки, цены в полосе, заливка владельца)
@@ -230,6 +261,7 @@ Verified against real files on `2026-04-07`.
 ---
 
 ## Стиль работы с пользователем
+
 - Отвечать на русском
 - Всегда говорить что нужно исправить
 - Всегда спрашивать "делаем?" перед реализацией

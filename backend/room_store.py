@@ -144,7 +144,9 @@ def _find_player_by_id(room: dict, player_id: str) -> dict:
     raise HTTPException(status_code=404, detail="Player not found in this room.")
 
 
-def _touch_room(room: dict) -> None:
+def _touch_room(room: dict, *, increment_version: bool = True) -> None:
+    if increment_version:
+        room["room_version"] = room.get("room_version", 0) + 1
     room["last_activity"] = time.time()
 
 
@@ -1130,6 +1132,7 @@ def create_room(nickname: str) -> dict:
             "min_players_to_start": MIN_PLAYERS_TO_START,
             "players": [host_player],
             "last_activity": time.time(),
+            "room_version": 1,
         }
         rooms[room_code] = room
 
@@ -1256,7 +1259,7 @@ def rejoin_room(room_code: str, player_token: str) -> dict:
     with _rooms_lock:
         room = _find_room_or_raise(normalized_room_code)
         player = _find_player_by_token(room, player_token)
-        _touch_room(room)
+        _touch_room(room, increment_version=False)
 
     return _build_action_response(player, room)
 

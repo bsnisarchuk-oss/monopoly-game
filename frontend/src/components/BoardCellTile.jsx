@@ -10,9 +10,33 @@ const CELL_ICONS = {
   free_parking: "P",
 };
 
-function formatCellPrice(cell) {
-  if (cell.price) return `$${cell.price}`;
-  if (typeof cell.amount === "number" && cell.cell_type === "tax") return `-$${cell.amount}`;
+const PROPERTY_RENT_MULTIPLIERS = [1, 2, 4, 7, 11];
+
+function formatAmount(value) {
+  if (value >= 1000) {
+    const k = value / 1000;
+    return `${k.toLocaleString("en-US", { maximumFractionDigits: 1 })}k`;
+  }
+  return `$${value}`;
+}
+
+function calcPropertyRent(price, level) {
+  const baseRent = Math.max(10, Math.floor(price / 10));
+  const clampedLevel = Math.min(level ?? 0, PROPERTY_RENT_MULTIPLIERS.length - 1);
+  return baseRent * PROPERTY_RENT_MULTIPLIERS[clampedLevel];
+}
+
+function getBandLabel(cell, ownerPlayer, propertyLevel) {
+  if (cell.cell_type === "property" && cell.price) {
+    if (ownerPlayer) {
+      return formatAmount(calcPropertyRent(cell.price, propertyLevel ?? 0));
+    }
+    return formatAmount(cell.price);
+  }
+  if (cell.price) return formatAmount(cell.price);
+  if (typeof cell.amount === "number" && cell.cell_type === "tax") {
+    return `-${formatAmount(cell.amount)}`;
+  }
   return null;
 }
 
@@ -37,7 +61,7 @@ function BoardCellTile({
   renderPlayerToken,
 }) {
   const cellIcon = CELL_ICONS[cell.cell_type] ?? null;
-  const priceLabel = formatCellPrice(cell);
+  const bandLabel = getBandLabel(cell, ownerPlayer, propertyLevel);
 
   return (
     <article
@@ -61,7 +85,7 @@ function BoardCellTile({
       style={tileStyle}
     >
       <span className={`cell-band cell-band-${cell.cell_type}`} aria-hidden="true">
-        {priceLabel && <span className="cell-band-price">{priceLabel}</span>}
+        {bandLabel && <span className="cell-band-price">{bandLabel}</span>}
       </span>
 
       <div className="cell-tile-body">

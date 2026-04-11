@@ -1,6 +1,5 @@
 import BoardCellTile from "./BoardCellTile";
 import { getBoardPlacement, getBoardSide, splitJailOccupants } from "./boardHelpers";
-import { formatLinkedEventLabel } from "./recentEventsHelpers";
 import { hexToRgba } from "./utils";
 
 function BoardTilesLayer({
@@ -9,7 +8,6 @@ function BoardTilesLayer({
   playerPositions = {},
   inJailByPlayer = {},
   jailPosition = 10,
-  cellRecentEventCounts = {},
   propertyOwners = {},
   propertyMortgaged = {},
   propertyLevels = {},
@@ -35,8 +33,6 @@ function BoardTilesLayer({
     const { row, column } = getBoardPlacement(cell.index);
     const boardSide = getBoardSide(cell.index);
     const groupClass = cell.color_group ? `cell-group-${cell.color_group}` : "";
-    const linkedEventCount = cellRecentEventCounts[cell.index] ?? 0;
-    const linkedEventLabel = formatLinkedEventLabel(linkedEventCount, cell.name);
     const ownerPlayerId = propertyOwners[cell.index] ?? null;
     const ownerPlayer = ownerPlayerId ? getPlayerById(ownerPlayerId) : null;
     const ownerColor = ownerPlayer ? getPlayerColor(ownerPlayer.player_id) : null;
@@ -54,8 +50,6 @@ function BoardTilesLayer({
         isFocused={focusedEventCellIndex === cell.index}
         isMoveTarget={movedCellIndexSet.has(cell.index)}
         isOwnedByYou={ownerPlayer?.player_id === currentPlayerId}
-        linkedEventCount={linkedEventCount}
-        linkedEventLabel={linkedEventLabel}
         ownerPlayer={ownerPlayer}
         tileStyle={{
           gridRow: row,
