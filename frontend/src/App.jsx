@@ -282,6 +282,8 @@ function App() {
   const actionGuideFlashTimeoutRef = useRef(null);
   const currentRoomRef = useRef(null);
   const activeRoomCodeRef = useRef(null);
+  const actionInFlightCountRef = useRef(0);
+  const isActionInFlightRef = useRef(false);
   const applyIncomingRoomStateRef = useRef(() => false);
   const clearCurrentRoomStateRef = useRef(() => {});
   const currentRoomCode = currentRoom?.room_code ?? null;
@@ -389,6 +391,16 @@ function App() {
   const pendingAuctionActivePlayer =
     currentRoom?.players.find((player) => player.player_id === pendingAuction?.active_player_id) ??
     null;
+  const activeUiPlayerId =
+    pendingAuction?.active_player_id ??
+    pendingPurchase?.player_id ??
+    pendingTrade?.receiver_id ??
+    pendingBankruptcy?.player_id ??
+    currentTurnPlayerId;
+  const activeUiPlayer =
+    currentRoom?.players.find((player) => player.player_id === activeUiPlayerId) ?? null;
+  const shouldShowCenterActionUi =
+    isGameOpen && activeUiPlayerId === playerId && Boolean(playerToken);
   const pendingAuctionHighestBidder =
     currentRoom?.players.find((player) => player.player_id === pendingAuction?.highest_bidder_id) ??
     null;
@@ -413,6 +425,7 @@ function App() {
   const gameScopedRecentEvents = filterRecentEventsByKind(priorRecentEvents, gameRecentEventsKind);
   const minimumAuctionBid = pendingAuction ? Math.max(1, pendingAuction.current_bid + 1) : 1;
   const currentPlayerCash = currentRoom?.game?.cash?.[playerId] ?? 0;
+  const canAffordPendingPurchase = currentPlayerCash >= (pendingPurchase?.price ?? Infinity);
   const focusedPlayerIdSet = new Set(focusedEventPlayerIds);
   const cellRecentEventCounts = {};
   const playerRecentEventCounts = {};
@@ -478,7 +491,7 @@ function App() {
   const inspectedPlayerLinkedEventCount = inspectedPlayer
     ? playerRecentEventCounts[inspectedPlayer.player_id] ?? 0
     : 0;
-  const inspectedPlayerIsCurrentTurn = inspectedPlayer?.player_id === currentTurnPlayerId;
+  const inspectedPlayerIsCurrentTurn = inspectedPlayer?.player_id === activeUiPlayerId;
   const inspectedPlayerCanBeTradeTarget =
     inspectedPlayer != null &&
     canProposeTrade &&
@@ -557,6 +570,16 @@ function App() {
     activeRoomCodeRef.current = null;
     setCurrentRoom(null);
   };
+
+  function beginRoomActionRequest() {
+    actionInFlightCountRef.current += 1;
+    isActionInFlightRef.current = true;
+  }
+
+  function endRoomActionRequest() {
+    actionInFlightCountRef.current = Math.max(0, actionInFlightCountRef.current - 1);
+    isActionInFlightRef.current = actionInFlightCountRef.current > 0;
+  }
 
   function handleRecentEventsHelpToggle() {
     setIsRecentEventsHelpCollapsed((current) => {
@@ -745,7 +768,7 @@ function App() {
         occupantIndex={occupantIndex}
         tokenColor={tokenColor}
         movementOffset={movementOffset}
-        isActiveTurn={currentTurnPlayerId === player.player_id}
+        isActiveTurn={activeUiPlayerId === player.player_id}
         isMoving={Boolean(movementEffect)}
       />
     );
@@ -841,14 +864,8 @@ function App() {
     isGameOpen &&
     pendingBankruptcy?.player_id === playerId &&
     Boolean(playerToken);
-  const canManagePurchaseFunding =
-    isGameOpen &&
-    currentTurnPlayerId === playerId &&
-    Boolean(pendingPurchase) &&
-    currentPlayerCash < (pendingPurchase?.price ?? Infinity) &&
-    Boolean(playerToken);
-  const canManageMortgages = canUsePreRollDesk || canManageDebtRecovery || canManagePurchaseFunding;
-  const canSellUpgrades = canUsePreRollDesk || canManageDebtRecovery || canManagePurchaseFunding;
+  const canManageMortgages = canUsePreRollDesk || canManageDebtRecovery;
+  const canSellUpgrades = canUsePreRollDesk || canManageDebtRecovery;
   const canUnmortgageProperties = canUsePreRollDesk;
   const mortgageableCells =
     currentPlayer == null
@@ -976,7 +993,10 @@ function App() {
     inspectedCellCanUseTradeDesk;
   let inspectedCellQuickActionMessage = null;
 
-  if (inspectedCellIsPendingPurchase && !canResolvePurchase) {
+  if (inspectedCellIsPendingPurchase && canResolvePurchase && !canAffordPendingPurchase) {
+    inspectedCellQuickActionMessage =
+      "You do not have enough cash to buy this cell right now. Pass on purchase to continue.";
+  } else if (inspectedCellIsPendingPurchase && !canResolvePurchase) {
     inspectedCellQuickActionMessage = `${
       pendingPurchasePlayer?.nickname ?? "The active player"
     } is deciding whether to buy this.`;
@@ -1301,6 +1321,7 @@ function App() {
     canUnmortgageProperties,
     unmortgageableCells,
     canResolvePurchase,
+    canAffordPendingPurchase,
     pendingPurchaseCell,
     pendingPurchase,
     pendingPurchasePlayer,
@@ -1511,6 +1532,10 @@ function App() {
     }
 
     const intervalId = setInterval(() => {
+      if (isActionInFlightRef.current) {
+        return;
+      }
+
       fetch(`${API_BASE_URL}/rooms/${currentRoomCode}`)
         .then((response) => {
           if (response.status === 404) {
@@ -1534,6 +1559,10 @@ function App() {
             return;
           }
           return response.json().then((data) => {
+            if (isActionInFlightRef.current) {
+              return;
+            }
+
             applyIncomingRoomStateRef.current(data, {
               expectedRoomCode: currentRoomCode,
             });
@@ -1738,6 +1767,7 @@ function App() {
     const nextReadyState = !currentPlayer.is_ready;
 
     setIsSubmitting(true);
+    beginRoomActionRequest();
     setStatus(nextReadyState ? "Setting you as ready..." : "Removing ready status...");
 
     try {
@@ -1776,6 +1806,7 @@ function App() {
     } catch (error) {
       setStatus(error.message);
     } finally {
+      endRoomActionRequest();
       setIsSubmitting(false);
     }
   }
@@ -1787,6 +1818,7 @@ function App() {
     }
 
     setIsSubmitting(true);
+    beginRoomActionRequest();
     setStatus("Starting game...");
 
     try {
@@ -1824,6 +1856,7 @@ function App() {
     } catch (error) {
       setStatus(error.message);
     } finally {
+      endRoomActionRequest();
       setIsSubmitting(false);
     }
   }
@@ -1834,7 +1867,17 @@ function App() {
       return;
     }
 
+    if (!canRollDice) {
+      setStatus(
+        currentTurnPlayerId !== playerId
+          ? "It is not your turn to roll."
+          : "Roll dice is not available right now.",
+      );
+      return;
+    }
+
     setIsSubmitting(true);
+    beginRoomActionRequest();
     setStatus("Rolling dice...");
 
     try {
@@ -1887,6 +1930,7 @@ function App() {
     } catch (error) {
       setStatus(error.message);
     } finally {
+      endRoomActionRequest();
       setIsSubmitting(false);
     }
   }
@@ -1898,6 +1942,7 @@ function App() {
     }
 
     setIsSubmitting(true);
+    beginRoomActionRequest();
     setStatus(`Paying $${JAIL_FINE_AMOUNT} to leave jail...`);
 
     try {
@@ -1935,6 +1980,7 @@ function App() {
     } catch (error) {
       setStatus(error.message);
     } finally {
+      endRoomActionRequest();
       setIsSubmitting(false);
     }
   }
@@ -1946,6 +1992,7 @@ function App() {
     }
 
     setIsSubmitting(true);
+    beginRoomActionRequest();
     setStatus("Declaring bankruptcy...");
 
     try {
@@ -1983,6 +2030,7 @@ function App() {
     } catch (error) {
       setStatus(error.message);
     } finally {
+      endRoomActionRequest();
       setIsSubmitting(false);
     }
   }
@@ -2004,6 +2052,7 @@ function App() {
     }
 
     setIsSubmitting(true);
+    beginRoomActionRequest();
     setStatus("Leaving room...");
 
     try {
@@ -2035,6 +2084,7 @@ function App() {
     } catch (error) {
       setStatus(error.message);
     } finally {
+      endRoomActionRequest();
       setIsSubmitting(false);
     }
   }
@@ -2046,6 +2096,7 @@ function App() {
     }
 
     setIsSubmitting(true);
+    beginRoomActionRequest();
     setStatus(`Buying ${pendingPurchaseCell.name}...`);
 
     try {
@@ -2083,6 +2134,7 @@ function App() {
     } catch (error) {
       setStatus(error.message);
     } finally {
+      endRoomActionRequest();
       setIsSubmitting(false);
     }
   }
@@ -2094,6 +2146,7 @@ function App() {
     }
 
     setIsSubmitting(true);
+    beginRoomActionRequest();
     setStatus(`Passing on ${pendingPurchaseCell.name}...`);
 
     try {
@@ -2136,6 +2189,7 @@ function App() {
     } catch (error) {
       setStatus(error.message);
     } finally {
+      endRoomActionRequest();
       setIsSubmitting(false);
     }
   }
@@ -2154,6 +2208,7 @@ function App() {
     }
 
     setIsSubmitting(true);
+    beginRoomActionRequest();
     setStatus(`Bidding $${bidAmount} on ${pendingAuctionCell.name}...`);
 
     try {
@@ -2198,6 +2253,7 @@ function App() {
     } catch (error) {
       setStatus(error.message);
     } finally {
+      endRoomActionRequest();
       setIsSubmitting(false);
     }
   }
@@ -2209,6 +2265,7 @@ function App() {
     }
 
     setIsSubmitting(true);
+    beginRoomActionRequest();
     setStatus(`Passing in the auction for ${pendingAuctionCell.name}...`);
 
     try {
@@ -2252,6 +2309,7 @@ function App() {
     } catch (error) {
       setStatus(error.message);
     } finally {
+      endRoomActionRequest();
       setIsSubmitting(false);
     }
   }
@@ -2271,6 +2329,7 @@ function App() {
     }
 
     setIsSubmitting(true);
+    beginRoomActionRequest();
     setStatus(`Upgrading ${propertyCell.name}...`);
 
     try {
@@ -2313,6 +2372,7 @@ function App() {
     } catch (error) {
       setStatus(error.message);
     } finally {
+      endRoomActionRequest();
       setIsSubmitting(false);
     }
   }
@@ -2332,6 +2392,7 @@ function App() {
     }
 
     setIsSubmitting(true);
+    beginRoomActionRequest();
     setStatus(`Selling one upgrade on ${propertyCell.name}...`);
 
     try {
@@ -2374,6 +2435,7 @@ function App() {
     } catch (error) {
       setStatus(error.message);
     } finally {
+      endRoomActionRequest();
       setIsSubmitting(false);
     }
   }
@@ -2393,6 +2455,7 @@ function App() {
     }
 
     setIsSubmitting(true);
+    beginRoomActionRequest();
     setStatus(`Mortgaging ${cell.name}...`);
 
     try {
@@ -2431,6 +2494,7 @@ function App() {
     } catch (error) {
       setStatus(error.message);
     } finally {
+      endRoomActionRequest();
       setIsSubmitting(false);
     }
   }
@@ -2450,6 +2514,7 @@ function App() {
     }
 
     setIsSubmitting(true);
+    beginRoomActionRequest();
     setStatus(`Unmortgaging ${cell.name}...`);
 
     try {
@@ -2488,6 +2553,7 @@ function App() {
     } catch (error) {
       setStatus(error.message);
     } finally {
+      endRoomActionRequest();
       setIsSubmitting(false);
     }
   }
@@ -2519,6 +2585,7 @@ function App() {
     }
 
     setIsSubmitting(true);
+    beginRoomActionRequest();
     setStatus(`Offering ${cell.name} to ${targetPlayer.nickname}...`);
 
     try {
@@ -2559,6 +2626,7 @@ function App() {
     } catch (error) {
       setStatus(error.message);
     } finally {
+      endRoomActionRequest();
       setIsSubmitting(false);
     }
   }
@@ -2576,6 +2644,7 @@ function App() {
         : "Rejecting trade...";
 
     setIsSubmitting(true);
+    beginRoomActionRequest();
     setStatus(actionLabel);
 
     try {
@@ -2601,7 +2670,9 @@ function App() {
 
       setPlayerId(data.player_id);
       setPlayerToken(data.player_token);
-      applyIncomingRoomStateRef.current(data.room);
+      applyIncomingRoomStateRef.current(data.room, {
+        allowRoomActivation: true,
+      });
       saveStoredSession({
         player_id: data.player_id,
         player_token: data.player_token,
@@ -2619,6 +2690,7 @@ function App() {
     } catch (error) {
       setStatus(error.message);
     } finally {
+      endRoomActionRequest();
       setIsSubmitting(false);
     }
   }
@@ -2654,7 +2726,7 @@ function App() {
           lastBankruptcySummary,
           lastDrawnCard,
           summaryState: {
-            currentTurnPlayer,
+            currentTurnPlayer: activeUiPlayer,
             lastLandedCell,
             lastLandedPlayer,
             lastLandedRentHint,
@@ -2675,6 +2747,7 @@ function App() {
             inspectedCellQuickActionMessage,
             inspectedCellCanBuy,
             inspectedCellCanSkipPurchase,
+            canAffordPendingPurchase,
             inspectedCellCanUpgrade,
             inspectedCellCanSellUpgrade,
             inspectedCellCanMortgage,
@@ -2706,6 +2779,7 @@ function App() {
             pendingPurchasePlayer,
             pendingPurchase,
             canResolvePurchase,
+            canAffordPendingPurchase,
             pendingAuction,
             pendingAuctionCell,
             pendingAuctionActivePlayer,
@@ -2793,7 +2867,7 @@ function App() {
             movedCellIndexSet,
             getPlayerById,
             playerRecentEventCounts,
-            currentTurnPlayerId,
+            currentTurnPlayerId: activeUiPlayerId,
             focusedPlayerIdSet,
             getPlayerPosition,
             getPlayerCell,
@@ -2856,6 +2930,9 @@ function App() {
             maxPropertyLevel: MAX_PROPERTY_LEVEL,
             jailFineAmount: JAIL_FINE_AMOUNT,
             jailPosition: JAIL_POSITION,
+          },
+          uiVisibilityState: {
+            shouldShowCenterActionUi,
           },
         })
       : null;
@@ -2923,7 +3000,7 @@ function App() {
           <EliminatedGameView
             roomCode={currentRoom.room_code}
             playerId={playerId}
-            currentTurnPlayerName={currentTurnPlayer?.nickname ?? "Unknown player"}
+            currentTurnPlayerName={activeUiPlayer?.nickname ?? "Unknown player"}
             lastEffects={lastEffects}
             lastBankruptcySummary={lastBankruptcySummary}
             bankruptcyRecapTitle={

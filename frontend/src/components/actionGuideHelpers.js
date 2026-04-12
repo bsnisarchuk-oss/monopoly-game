@@ -199,6 +199,7 @@ export function buildActionGuide({
   canUnmortgageProperties,
   unmortgageableCells,
   canResolvePurchase,
+  canAffordPendingPurchase,
   pendingPurchaseCell,
   pendingPurchase,
   pendingPurchasePlayer,
@@ -260,14 +261,29 @@ export function buildActionGuide({
   }
 
   if (canResolvePurchase && pendingPurchaseCell) {
+    if (!canAffordPendingPurchase) {
+      return {
+        tone: "urgent",
+        eyebrow: "Decision needed",
+        title: "Pass required",
+        summary: `You do not have enough cash to buy ${pendingPurchaseCell.name} for $${pendingPurchase?.price ?? 0} right now.`,
+        steps: [
+          "Use Pass on purchase to continue.",
+          "Mortgage and upgrade actions unlock again after the purchase is resolved.",
+        ],
+        focusKey: "skip-purchase",
+        targetKey: "actions",
+      };
+    }
+
     return {
       tone: "urgent",
       eyebrow: "Decision needed",
       title: "Buy or pass",
-      summary: `You landed on ${pendingPurchaseCell.name}. Buy it for $${pendingPurchase?.price ?? 0} or pass it to the auction flow.`,
+      summary: `You landed on ${pendingPurchaseCell.name}. Buy it for $${pendingPurchase?.price ?? 0} or pass it to the next ownership step.`,
       steps: [
         "Use Buy property if you want to keep this cell.",
-        "Use Pass on purchase if you want the table to move to auction.",
+        "Use Pass on purchase if you do not want to buy it.",
       ],
       focusKey: "buy-property",
       targetKey: "actions",

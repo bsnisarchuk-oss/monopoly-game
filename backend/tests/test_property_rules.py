@@ -190,6 +190,19 @@ class PropertyRuleTests(unittest.TestCase):
         self.assertEqual(game["cash"][guest_player_id], room_store.STARTING_CASH - 20)
         self.assertEqual(game["cash"][host_player_id], room_store.STARTING_CASH + 20)
 
+    def test_non_active_player_cannot_roll_dice(self):
+        room_code, room, responses = self._create_started_room(starting_player_index=0)
+        host_response, guest_response = responses
+
+        room["game"]["turn"]["current_player_id"] = host_response["player_id"]
+        room["game"]["turn"]["can_roll"] = True
+
+        with self.assertRaises(HTTPException) as error:
+            room_store.roll_dice(room_code, guest_response["player_token"])
+
+        self.assertEqual(error.exception.status_code, 403)
+        self.assertEqual(error.exception.detail, "It is not your turn.")
+
     def test_even_sell_three_property_group_middle_state(self):
         # light_blue group (positions 6, 8, 9). State [2, 1, 1]:
         # can only sell from position 6 (highest), positions 8 and 9 are blocked.

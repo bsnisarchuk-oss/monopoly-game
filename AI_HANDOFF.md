@@ -49,6 +49,44 @@ npm run dev
 
 ## Verified Current Status
 
+Latest local verification on `2026-04-12`:
+
+- In PowerShell, prefer `npm.cmd run lint` and `npm.cmd run build`
+- Reason: `npm run ...` may resolve to `npm.ps1` and fail on `ExecutionPolicy`
+- Frontend checks completed:
+  - `npm.cmd run lint` - OK
+  - `npm.cmd run build` - OK
+- Backend checks completed:
+  - `..\.venv\Scripts\python -m unittest tests.test_auction_flow tests.test_property_rules` - OK
+  - `..\.venv\Scripts\python -m py_compile room_store.py tests\test_auction_flow.py` - OK
+- `pytest` is not installed in the backend venv right now; use `unittest` for current backend test files
+
+Recent verified changes:
+
+- Backend:
+  - `backend/room_store.py` now has a special 2-player follow-up purchase flow
+  - If player A passes on direct purchase, player B gets a direct buy/pass decision instead of an auction
+  - If player B also passes, the property stays unowned and turn flow resumes
+  - `backend/tests/test_auction_flow.py` was updated for this behaviour
+- Frontend:
+  - `frontend/src/App.jsx` uses `activeUiPlayerId = pendingAuction.active_player_id ?? pendingPurchase.player_id ?? currentTurnPlayerId`
+  - `frontend/src/components/GameView.jsx` prioritises `AuctionCard` in the board spotlight during auction
+  - `frontend/src/components/AuctionCard.jsx` is now a more minimal English-only auction card
+  - `frontend/src/components/BoardCenterActions.jsx` uses a shorter neutral auction note and a dedicated main CTA class for `Roll dice`
+  - `frontend/src/index.css` contains the minimal auction styles and the soft teal `primary-turn-button`
+
+Current local worktree is dirty. Do not revert unrelated edits unless the user explicitly asks:
+
+- `.claude/settings.local.json`
+- `backend/room_store.py`
+- `backend/tests/test_auction_flow.py`
+- `frontend/src/App.jsx`
+- `frontend/src/components/AuctionCard.jsx`
+- `frontend/src/components/BoardCenterActions.jsx`
+- `frontend/src/components/GameView.jsx`
+- `frontend/src/components/gameViewHelpers.js`
+- `frontend/src/index.css`
+
 Verified against real files on `2026-04-07`.
 
 - `npm run lint` — OK

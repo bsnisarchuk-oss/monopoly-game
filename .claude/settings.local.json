@@ -7,7 +7,26 @@
       "Bash(npm run:*)",
       "Bash(curl -s http://localhost:5173/)",
       "Bash(npm.cmd run:*)",
-      "Bash(npx eslint:*)"
+      "Bash(npx eslint:*)",
+      "Bash(ls u:/Monopoly/backend/*.py)",
+      "Bash(.venv/Scripts/uvicorn.exe main:app --port 8000)",
+      "Bash(curl -s -X POST http://127.0.0.1:8000/rooms/create -H 'Content-Type: application/json' -d '{\"nickname\": \"Александр\"}')",
+      "Bash(python -c \"import sys,json; print\\(json.dumps\\(json.load\\(sys.stdin\\), indent=2, ensure_ascii=False\\)\\)\")",
+      "Bash(curl -s http://127.0.0.1:8000/docs)",
+      "Bash(curl -s http://127.0.0.1:8000/openapi.json)",
+      "Bash(python -c \"import sys,json; d=json.load\\(sys.stdin\\); [print\\(m.upper\\(\\), p\\) for p,v in d['paths'].items\\(\\) for m in v]\")",
+      "Bash(curl -s -X POST http://127.0.0.1:8000/rooms -H \"Content-Type: application/json\" -d \"{\\\\\"nickname\\\\\": \\\\\"Александр\\\\\"}\")",
+      "Bash(python -c ':*)",
+      "Bash(git add:*)",
+      "Bash(git commit -m ':*)",
+      "Bash(ls u:/Monopoly/*.md u:/Monopoly/README*)",
+      "Bash(git -C u:/Monopoly log --oneline -10)",
+      "Bash(git -C u:/Monopoly log --oneline)",
+      "Bash(git -C u:/Monopoly diff --stat HEAD)",
+      "Bash(.venv/Scripts/activate.bat)",
+      "Bash(uvicorn main:app --reload)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:5173/)",
+      "Bash(u:/Monopoly/backend/.venv/Scripts/uvicorn.exe main:app --reload --app-dir u:/Monopoly/backend)"
     ]
   }
 }

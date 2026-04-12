@@ -598,6 +598,49 @@ def _resume_turn_after_purchase(room: dict, player_id: str) -> None:
     turn["can_roll"] = True
 
 
+def _get_pending_purchase_resume_player_id(pending_purchase: dict) -> str:
+    return pending_purchase.get("resume_after_player_id", pending_purchase["player_id"])
+
+
+def _offer_property_to_other_player_in_two_player_game(
+    room: dict,
+    declined_player_id: str,
+    position: int,
+    effects: list[str],
+) -> tuple[bool, str | None]:
+    if len(room["players"]) != 2:
+        return False, None
+
+    game = room["game"]
+    cell = _get_board_cell(position)
+
+    if not _is_buyable_cell(cell) or game["property_owners"].get(position) is not None:
+        return True, None
+
+    offered_player_id = _get_next_player_id(room, declined_player_id)
+
+    if offered_player_id == declined_player_id:
+        return True, None
+
+    price = cell["price"]
+    offered_player_name = _get_player_name(room, offered_player_id)
+
+    if game["cash"].get(offered_player_id, 0) < price:
+        effects.append(f"{offered_player_name} cannot afford {cell['name']} for ${price}.")
+        return True, None
+
+    game["pending_purchase"] = {
+        "player_id": offered_player_id,
+        "position": position,
+        "price": price,
+        "cell_name": cell["name"],
+        "cell_type": cell["cell_type"],
+        "resume_after_player_id": declined_player_id,
+    }
+    effects.append(f"{offered_player_name} can buy {cell['name']} for ${price}.")
+    return True, offered_player_id
+
+
 def _build_auction_order(room: dict, initiator_player_id: str) -> list[str]:
     game = room["game"]
     ordered_player_ids = [
@@ -1744,6 +1787,7 @@ def buy_property(room_code: str, player_token: str) -> dict:
         room = _find_room_or_raise(normalized_room_code)
         player, game, pending_purchase = _require_pending_purchase(room, player_token)
         player_id = player["player_id"]
+        resume_after_player_id = _get_pending_purchase_resume_player_id(pending_purchase)
         position = pending_purchase["position"]
         cell = _get_board_cell(position)
         price = pending_purchase["price"]
@@ -1774,7 +1818,7 @@ def buy_property(room_code: str, player_token: str) -> dict:
                 f"Completed the {cell['color_group'].replace('_', ' ')} set. Upgrades unlocked."
             )
 
-        _resume_turn_after_purchase(room, player_id)
+        _resume_turn_after_purchase(room, resume_after_player_id)
         _touch_room_with_event(
             room,
             EVENT_KIND_PROPERTY,
@@ -1792,22 +1836,56 @@ def skip_property_purchase(room_code: str, player_token: str) -> dict:
         room = _find_room_or_raise(normalized_room_code)
         player, game, pending_purchase = _require_pending_purchase(room, player_token)
         player_id = player["player_id"]
+        resume_after_player_id = _get_pending_purchase_resume_player_id(pending_purchase)
+        is_follow_up_purchase = resume_after_player_id != player_id
         position = pending_purchase["position"]
         cell = _get_board_cell(position)
 
         game["pending_purchase"] = None
         game["last_effects"].append(f"Passed on buying {cell['name']}.")
 
-        if _start_auction(room, player_id, position, game["last_effects"]):
-            _touch_room_with_event(
-                room,
-                EVENT_KIND_AUCTION,
-                player_id=player_id,
-                cell_index=position,
+        if not is_follow_up_purchase:
+            handled_two_player_offer, direct_offer_player_id = (
+                _offer_property_to_other_player_in_two_player_game(
+                    room,
+                    player_id,
+                    position,
+                    game["last_effects"],
+                )
             )
-            return _build_action_response(player, room)
 
-        _resume_turn_after_purchase(room, player_id)
+            if direct_offer_player_id is not None:
+                _touch_room_with_event(
+                    room,
+                    EVENT_KIND_PROPERTY,
+                    player_id=player_id,
+                    target_player_id=direct_offer_player_id,
+                    cell_index=position,
+                )
+                return _build_action_response(player, room)
+
+            if handled_two_player_offer:
+                game["last_effects"].append(f"No one bought {cell['name']}.")
+                _resume_turn_after_purchase(room, resume_after_player_id)
+                _touch_room_with_event(
+                    room,
+                    EVENT_KIND_PROPERTY,
+                    player_id=player_id,
+                    cell_index=position,
+                )
+                return _build_action_response(player, room)
+
+            if _start_auction(room, player_id, position, game["last_effects"]):
+                _touch_room_with_event(
+                    room,
+                    EVENT_KIND_AUCTION,
+                    player_id=player_id,
+                    cell_index=position,
+                )
+                return _build_action_response(player, room)
+
+        game["last_effects"].append(f"No one bought {cell['name']}.")
+        _resume_turn_after_purchase(room, resume_after_player_id)
         _touch_room_with_event(
             room,
             EVENT_KIND_PROPERTY,

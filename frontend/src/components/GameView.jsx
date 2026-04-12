@@ -1,4 +1,3 @@
-import ActionGuideCard from "./ActionGuideCard";
 import AuctionCard from "./AuctionCard";
 import BankruptcySummaryCard from "./BankruptcySummaryCard";
 import BoardCenterActions from "./BoardCenterActions";
@@ -19,11 +18,10 @@ function GameView({
   turnNumber,
   playerId,
   boardCenterSummaryProps,
-  actionGuideCardProps,
   selectedCellInspectorProps = null,
   selectedPlayerInspectorProps = null,
   bankruptcySummaryProps = null,
-  boardCenterActionsProps,
+  boardCenterActionsProps = null,
   pendingPurchaseCardProps = null,
   auctionCardProps = null,
   tradeDeskCardProps = null,
@@ -34,6 +32,11 @@ function GameView({
   boardTilesLayerProps,
   boardPlayersGridProps,
 }) {
+  const hasAuctionSpotlight = Boolean(auctionCardProps);
+  const hasCenterSpotlightContent = Boolean(
+    auctionCardProps || boardCenterActionsProps || pendingPurchaseCardProps,
+  );
+
   return (
     <section className="game-card">
       <div className="room-card-header game-card-header">
@@ -67,15 +70,22 @@ function GameView({
         <section className="game-main-stage">
           <section className="monopoly-board-shell">
             <div className="monopoly-board">
-              <section className="board-center">
-                <div className="board-center-spotlight">
-                  <ActionGuideCard {...actionGuideCardProps} />
-                  <BoardCenterActions {...boardCenterActionsProps} />
-                  {pendingPurchaseCardProps && (
-                    <PendingPurchaseCard {...pendingPurchaseCardProps} />
-                  )}
-                  {auctionCardProps && <AuctionCard {...auctionCardProps} />}
-                </div>
+              <section
+                className={`board-center${hasAuctionSpotlight ? " has-auction-spotlight" : ""}`}
+              >
+                {hasCenterSpotlightContent && (
+                  <div
+                    className={`board-center-spotlight${
+                      hasAuctionSpotlight ? " is-auction-active" : ""
+                    }`}
+                  >
+                    {auctionCardProps && <AuctionCard {...auctionCardProps} />}
+                    {boardCenterActionsProps && <BoardCenterActions {...boardCenterActionsProps} />}
+                    {pendingPurchaseCardProps && (
+                      <PendingPurchaseCard {...pendingPurchaseCardProps} />
+                    )}
+                  </div>
+                )}
               </section>
 
               <BoardTilesLayer {...boardTilesLayerProps} />

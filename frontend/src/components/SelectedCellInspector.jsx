@@ -16,6 +16,7 @@ function SelectedCellInspector({
   isSubmitting = false,
   canBuy = false,
   canSkipPurchase = false,
+  canAffordPurchase = true,
   canUpgrade = false,
   canSellUpgrade = false,
   canMortgage = false,
@@ -129,7 +130,7 @@ function SelectedCellInspector({
               type="button"
               className="buy-button"
               onClick={onBuyProperty}
-              disabled={isSubmitting}
+              disabled={isSubmitting || !canAffordPurchase}
             >
               Buy property
             </button>

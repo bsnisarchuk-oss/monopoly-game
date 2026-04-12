@@ -39,9 +39,65 @@ class AuctionFlowTests(unittest.TestCase):
             "cell_type": cell["cell_type"],
         }
 
-    def test_skip_purchase_starts_auction_for_next_player(self):
+    def test_two_player_skip_purchase_offers_direct_buy_to_other_player(self):
         room_code, room, responses = self._create_started_room()
         host_response, guest_response = responses
+
+        self._set_pending_purchase(room, host_response, position=1)
+        response = room_store.skip_property_purchase(room_code, host_response["player_token"])
+
+        pending_purchase = response["room"]["game"]["pending_purchase"]
+
+        self.assertIsNone(response["room"]["game"]["pending_auction"])
+        self.assertIsNotNone(pending_purchase)
+        self.assertEqual(pending_purchase["position"], 1)
+        self.assertEqual(pending_purchase["player_id"], guest_response["player_id"])
+        self.assertEqual(
+            room["game"]["pending_purchase"]["resume_after_player_id"],
+            host_response["player_id"],
+        )
+        self.assertIn("Guest can buy Copper Hollow for $60.", response["room"]["game"]["last_effects"])
+
+    def test_two_player_other_player_can_buy_without_auction(self):
+        room_code, room, responses = self._create_started_room()
+        host_response, guest_response = responses
+
+        self._set_pending_purchase(room, host_response, position=1)
+        room_store.skip_property_purchase(room_code, host_response["player_token"])
+
+        buy_response = room_store.buy_property(room_code, guest_response["player_token"])
+        game = buy_response["room"]["game"]
+
+        self.assertIsNone(game["pending_purchase"])
+        self.assertIsNone(game["pending_auction"])
+        self.assertEqual(game["property_owners"][1], guest_response["player_id"])
+        self.assertEqual(game["cash"][guest_response["player_id"]], room_store.STARTING_CASH - 60)
+        self.assertEqual(game["turn"]["current_player_id"], guest_response["player_id"])
+        self.assertTrue(game["turn"]["can_roll"])
+        self.assertIn("Bought Copper Hollow for $60.", " ".join(game["last_effects"]))
+
+    def test_two_player_property_stays_unowned_if_both_players_pass(self):
+        room_code, room, responses = self._create_started_room()
+        host_response, guest_response = responses
+
+        self._set_pending_purchase(room, host_response, position=1)
+        room_store.skip_property_purchase(room_code, host_response["player_token"])
+        final_response = room_store.skip_property_purchase(room_code, guest_response["player_token"])
+
+        game = final_response["room"]["game"]
+
+        self.assertIsNone(game["pending_purchase"])
+        self.assertIsNone(game["pending_auction"])
+        self.assertNotIn(1, game["property_owners"])
+        self.assertEqual(game["turn"]["current_player_id"], guest_response["player_id"])
+        self.assertTrue(game["turn"]["can_roll"])
+        self.assertIn("No one bought Copper Hollow.", game["last_effects"])
+
+    def test_skip_purchase_starts_auction_for_next_player_in_three_player_game(self):
+        room_code, room, responses = self._create_started_room(
+            nicknames=("Host", "Guest1", "Guest2"), starting_player_index=0
+        )
+        host_response, guest1_response, guest2_response = responses
 
         self._set_pending_purchase(room, host_response, position=1)
         response = room_store.skip_property_purchase(room_code, host_response["player_token"])
@@ -52,120 +108,18 @@ class AuctionFlowTests(unittest.TestCase):
         self.assertEqual(auction["position"], 1)
         self.assertEqual(
             auction["eligible_player_ids"],
-            [guest_response["player_id"], host_response["player_id"]],
+            [
+                guest1_response["player_id"],
+                guest2_response["player_id"],
+                host_response["player_id"],
+            ],
         )
-        self.assertEqual(auction["active_player_id"], guest_response["player_id"])
+        self.assertEqual(auction["active_player_id"], guest1_response["player_id"])
         self.assertEqual(auction["current_bid"], 0)
         self.assertIsNone(auction["highest_bidder_id"])
         self.assertIn("Auction started for Copper Hollow.", response["room"]["game"]["last_effects"])
 
-    def test_highest_bidder_wins_after_other_player_passes(self):
-        room_code, room, responses = self._create_started_room()
-        host_response, guest_response = responses
-
-        self._set_pending_purchase(room, host_response, position=1)
-        room_store.skip_property_purchase(room_code, host_response["player_token"])
-
-        bid_response = room_store.bid_in_auction(room_code, guest_response["player_token"], amount=50)
-        pending_auction = bid_response["room"]["game"]["pending_auction"]
-
-        self.assertEqual(pending_auction["current_bid"], 50)
-        self.assertEqual(pending_auction["highest_bidder_id"], guest_response["player_id"])
-        self.assertEqual(pending_auction["active_player_id"], host_response["player_id"])
-
-        final_response = room_store.pass_auction(room_code, host_response["player_token"])
-        game = final_response["room"]["game"]
-
-        self.assertIsNone(game["pending_auction"])
-        self.assertEqual(game["property_owners"][1], guest_response["player_id"])
-        self.assertEqual(game["property_mortgaged"][1], False)
-        self.assertEqual(game["cash"][guest_response["player_id"]], room_store.STARTING_CASH - 50)
-        self.assertEqual(game["turn"]["current_player_id"], guest_response["player_id"])
-        self.assertTrue(game["turn"]["can_roll"])
-        self.assertEqual(game["recent_events"][0]["kind"], room_store.EVENT_KIND_AUCTION)
-        self.assertEqual(game["recent_events"][0]["player_id"], guest_response["player_id"])
-        self.assertIsNone(game["recent_events"][0]["target_player_id"])
-        self.assertEqual(game["recent_events"][0]["cell_index"], 1)
-        self.assertIn(
-            "won the auction for Copper Hollow at $50.",
-            " ".join(game["last_effects"]),
-        )
-
-    def test_property_stays_unowned_if_everyone_passes(self):
-        room_code, room, responses = self._create_started_room()
-        host_response, guest_response = responses
-
-        self._set_pending_purchase(room, host_response, position=1)
-        room_store.skip_property_purchase(room_code, host_response["player_token"])
-        room_store.pass_auction(room_code, guest_response["player_token"])
-        final_response = room_store.pass_auction(room_code, host_response["player_token"])
-
-        game = final_response["room"]["game"]
-
-        self.assertIsNone(game["pending_auction"])
-        self.assertNotIn(1, game["property_owners"])
-        self.assertEqual(game["turn"]["current_player_id"], guest_response["player_id"])
-        self.assertTrue(game["turn"]["can_roll"])
-        self.assertIn("No one bought Copper Hollow in the auction.", game["last_effects"])
-
-    def test_bid_below_minimum_is_rejected(self):
-        room_code, room, responses = self._create_started_room()
-        host_response, guest_response = responses
-
-        self._set_pending_purchase(room, host_response, position=1)
-        room_store.skip_property_purchase(room_code, host_response["player_token"])
-        # Guest bids $10.
-        room_store.bid_in_auction(room_code, guest_response["player_token"], amount=10)
-        # Host must bid at least $11 (current + 1). Bidding $10 must fail.
-        with self.assertRaises(Exception) as error:
-            room_store.bid_in_auction(room_code, host_response["player_token"], amount=10)
-        self.assertEqual(error.exception.status_code, 400)
-        self.assertIn("$11", error.exception.detail)
-
-    def test_bid_above_cash_is_rejected(self):
-        room_code, room, responses = self._create_started_room()
-        host_response, guest_response = responses
-        game = room["game"]
-
-        # Give guest just $5 so they can't match a large bid.
-        game["cash"][guest_response["player_id"]] = 5
-
-        self._set_pending_purchase(room, host_response, position=1)
-        room_store.skip_property_purchase(room_code, host_response["player_token"])
-
-        with self.assertRaises(Exception) as error:
-            room_store.bid_in_auction(room_code, guest_response["player_token"], amount=6)
-        self.assertEqual(error.exception.status_code, 400)
-        self.assertIn("enough cash", error.exception.detail)
-
-    def test_cannot_bid_out_of_turn(self):
-        room_code, room, responses = self._create_started_room()
-        host_response, guest_response = responses
-
-        self._set_pending_purchase(room, host_response, position=1)
-        room_store.skip_property_purchase(room_code, host_response["player_token"])
-        # Guest is active bidder; host tries to bid first.
-        with self.assertRaises(Exception) as error:
-            room_store.bid_in_auction(room_code, host_response["player_token"], amount=1)
-        self.assertEqual(error.exception.status_code, 403)
-
-    def test_already_passed_player_cannot_bid(self):
-        room_code, room, responses = self._create_started_room()
-        host_response, guest_response = responses
-
-        self._set_pending_purchase(room, host_response, position=1)
-        room_store.skip_property_purchase(room_code, host_response["player_token"])
-        # Guest passes; then tries to bid — should be rejected.
-        room_store.pass_auction(room_code, guest_response["player_token"])
-
-        with self.assertRaises(Exception) as error:
-            room_store.bid_in_auction(room_code, guest_response["player_token"], amount=1)
-        self.assertEqual(error.exception.status_code, 403)
-        self.assertIn("already passed", error.exception.detail)
-
-    def test_highest_bidder_wins_when_last_opponent_passes_3_players(self):
-        # 3-player auction: Guest1 bids, Guest2 passes, Host passes.
-        # Only after Host's pass is Guest1 the sole remaining active player → finalize.
+    def test_highest_bidder_wins_after_other_players_pass_in_three_player_game(self):
         room_code, room, responses = self._create_started_room(
             nicknames=("Host", "Guest1", "Guest2"), starting_player_index=0
         )
@@ -174,16 +128,109 @@ class AuctionFlowTests(unittest.TestCase):
         self._set_pending_purchase(room, host_response, position=1)
         room_store.skip_property_purchase(room_code, host_response["player_token"])
 
-        # Auction order: Guest1 → Guest2 → Host (initiator bids last).
+        bid_response = room_store.bid_in_auction(room_code, guest1_response["player_token"], amount=50)
+        pending_auction = bid_response["room"]["game"]["pending_auction"]
+
+        self.assertEqual(pending_auction["current_bid"], 50)
+        self.assertEqual(pending_auction["highest_bidder_id"], guest1_response["player_id"])
+        self.assertEqual(pending_auction["active_player_id"], guest2_response["player_id"])
+
+        room_store.pass_auction(room_code, guest2_response["player_token"])
+        final_response = room_store.pass_auction(room_code, host_response["player_token"])
+        game = final_response["room"]["game"]
+
+        self.assertIsNone(game["pending_auction"])
+        self.assertEqual(game["property_owners"][1], guest1_response["player_id"])
+        self.assertEqual(game["property_mortgaged"][1], False)
+        self.assertEqual(game["cash"][guest1_response["player_id"]], room_store.STARTING_CASH - 50)
+        self.assertEqual(game["turn"]["current_player_id"], guest1_response["player_id"])
+        self.assertTrue(game["turn"]["can_roll"])
+        self.assertEqual(game["recent_events"][0]["kind"], room_store.EVENT_KIND_AUCTION)
+        self.assertEqual(game["recent_events"][0]["player_id"], guest1_response["player_id"])
+        self.assertIsNone(game["recent_events"][0]["target_player_id"])
+        self.assertEqual(game["recent_events"][0]["cell_index"], 1)
+        self.assertIn(
+            "won the auction for Copper Hollow at $50.",
+            " ".join(game["last_effects"]),
+        )
+
+    def test_bid_below_minimum_is_rejected(self):
+        room_code, room, responses = self._create_started_room(
+            nicknames=("Host", "Guest1", "Guest2"), starting_player_index=0
+        )
+        host_response, guest1_response, guest2_response = responses
+
+        self._set_pending_purchase(room, host_response, position=1)
+        room_store.skip_property_purchase(room_code, host_response["player_token"])
+        room_store.bid_in_auction(room_code, guest1_response["player_token"], amount=10)
+
+        with self.assertRaises(Exception) as error:
+            room_store.bid_in_auction(room_code, guest2_response["player_token"], amount=10)
+        self.assertEqual(error.exception.status_code, 400)
+        self.assertIn("$11", error.exception.detail)
+
+    def test_bid_above_cash_is_rejected(self):
+        room_code, room, responses = self._create_started_room(
+            nicknames=("Host", "Guest1", "Guest2"), starting_player_index=0
+        )
+        host_response, guest1_response, _ = responses
+        game = room["game"]
+
+        game["cash"][guest1_response["player_id"]] = 5
+
+        self._set_pending_purchase(room, host_response, position=1)
+        room_store.skip_property_purchase(room_code, host_response["player_token"])
+
+        with self.assertRaises(Exception) as error:
+            room_store.bid_in_auction(room_code, guest1_response["player_token"], amount=6)
+        self.assertEqual(error.exception.status_code, 400)
+        self.assertIn("enough cash", error.exception.detail)
+
+    def test_cannot_bid_out_of_turn(self):
+        room_code, room, responses = self._create_started_room(
+            nicknames=("Host", "Guest1", "Guest2"), starting_player_index=0
+        )
+        host_response, _, guest2_response = responses
+
+        self._set_pending_purchase(room, host_response, position=1)
+        room_store.skip_property_purchase(room_code, host_response["player_token"])
+
+        with self.assertRaises(Exception) as error:
+            room_store.bid_in_auction(room_code, guest2_response["player_token"], amount=1)
+        self.assertEqual(error.exception.status_code, 403)
+
+    def test_already_passed_player_cannot_bid(self):
+        room_code, room, responses = self._create_started_room(
+            nicknames=("Host", "Guest1", "Guest2"), starting_player_index=0
+        )
+        host_response, guest1_response, _ = responses
+
+        self._set_pending_purchase(room, host_response, position=1)
+        room_store.skip_property_purchase(room_code, host_response["player_token"])
+        room_store.pass_auction(room_code, guest1_response["player_token"])
+
+        with self.assertRaises(Exception) as error:
+            room_store.bid_in_auction(room_code, guest1_response["player_token"], amount=1)
+        self.assertEqual(error.exception.status_code, 403)
+        self.assertIn("already passed", error.exception.detail)
+
+    def test_highest_bidder_wins_when_last_opponent_passes_3_players(self):
+        room_code, room, responses = self._create_started_room(
+            nicknames=("Host", "Guest1", "Guest2"), starting_player_index=0
+        )
+        host_response, guest1_response, guest2_response = responses
+
+        self._set_pending_purchase(room, host_response, position=1)
+        room_store.skip_property_purchase(room_code, host_response["player_token"])
+
         room_store.bid_in_auction(room_code, guest1_response["player_token"], amount=30)
-        # After Guest2 passes, auction is NOT yet over — Host still needs to act.
         mid_response = room_store.pass_auction(room_code, guest2_response["player_token"])
         self.assertIsNotNone(mid_response["room"]["game"]["pending_auction"])
         self.assertEqual(
             mid_response["room"]["game"]["pending_auction"]["active_player_id"],
             host_response["player_id"],
         )
-        # Host passes → only Guest1 (highest bidder) remains → finalize.
+
         final_response = room_store.pass_auction(room_code, host_response["player_token"])
         game = final_response["room"]["game"]
 
@@ -193,10 +240,6 @@ class AuctionFlowTests(unittest.TestCase):
         self.assertIn("won the auction for Copper Hollow at $30.", " ".join(game["last_effects"]))
 
     def test_last_active_bidder_wins_immediately_on_bid(self):
-        # Tests the bid_in_auction immediate-finalization path (line 1464):
-        # if after your bid you are the ONLY remaining active player, auction ends inline.
-        # Setup: 3-player auction, Guest1 and Guest2 both pass first,
-        # then Host bids — Host is only active player — finalize inside bid call.
         room_code, room, responses = self._create_started_room(
             nicknames=("Host", "Guest1", "Guest2"), starting_player_index=0
         )
@@ -205,12 +248,9 @@ class AuctionFlowTests(unittest.TestCase):
         self._set_pending_purchase(room, host_response, position=1)
         room_store.skip_property_purchase(room_code, host_response["player_token"])
 
-        # Auction order: Guest1 → Guest2 → Host.
-        # Guest1 and Guest2 both pass without bidding.
         room_store.pass_auction(room_code, guest1_response["player_token"])
         room_store.pass_auction(room_code, guest2_response["player_token"])
 
-        # Only Host remains active. Host bids → immediate finalization inside bid_in_auction.
         final_response = room_store.bid_in_auction(room_code, host_response["player_token"], amount=50)
         game = final_response["room"]["game"]
 

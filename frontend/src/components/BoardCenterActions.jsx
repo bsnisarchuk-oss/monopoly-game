@@ -6,11 +6,11 @@ function BoardCenterActions({
   pendingPurchasePlayer = null,
   pendingPurchase = null,
   canResolvePurchase = false,
+  canAffordPendingPurchase = true,
   pendingAuction = null,
   pendingAuctionCell = null,
   pendingAuctionActivePlayer = null,
   canBidInAuction = false,
-  minimumAuctionBid = 0,
   pendingTrade = null,
   pendingTradeCell = null,
   pendingTradeReceiver = null,
@@ -37,8 +37,22 @@ function BoardCenterActions({
   onSkipPurchase,
   onLeaveRoom,
 }) {
+  const auctionCellName = pendingAuctionCell?.name ?? pendingAuction?.cell_name ?? "this cell";
+  const isOpeningAuctionBid = (pendingAuction?.current_bid ?? 0) <= 0;
+
   return (
     <div ref={sectionRef} className={className} style={style}>
+      {pendingAuction && (
+        <p className="purchase-note is-auction-note">
+          {canBidInAuction
+            ? isOpeningAuctionBid
+              ? `${auctionCellName} is in auction. Place the opening bid or pass.`
+              : `${auctionCellName} is in auction. Raise the bid or pass.`
+            : `Auction active for ${auctionCellName}. Waiting for ${
+                pendingAuctionActivePlayer?.nickname ?? "the active player"
+              }.`}
+        </p>
+      )}
       {pendingPurchaseCell && !canResolvePurchase && (
         <p className="purchase-note">
           Waiting for {pendingPurchasePlayer?.nickname ?? "the active player"} to buy or pass on{" "}
@@ -47,19 +61,9 @@ function BoardCenterActions({
       )}
       {canResolvePurchase && (
         <p className="purchase-note">
-          You can buy {pendingPurchaseCell.name} for ${pendingPurchase?.price} or pass.
-        </p>
-      )}
-      {pendingAuction && !canBidInAuction && (
-        <p className="purchase-note">
-          Waiting for {pendingAuctionActivePlayer?.nickname ?? "the current bidder"} to bid or pass
-          on {pendingAuctionCell?.name ?? pendingAuction.cell_name}.
-        </p>
-      )}
-      {pendingAuction && canBidInAuction && (
-        <p className="purchase-note">
-          You can bid at least ${minimumAuctionBid} for{" "}
-          {pendingAuctionCell?.name ?? pendingAuction.cell_name}, or pass.
+          {canAffordPendingPurchase
+            ? `You can buy ${pendingPurchaseCell.name} for $${pendingPurchase?.price} or pass.`
+            : `You do not have enough cash to buy ${pendingPurchaseCell.name} right now. Pass on purchase to continue.`}
         </p>
       )}
       {pendingTrade && !canAcceptTrade && !canRejectTrade && (
@@ -135,15 +139,17 @@ function BoardCenterActions({
           Doubles streak: {currentPlayerDoublesStreak}/3 - one more and you go to jail!
         </p>
       )}
-      <button
-        type="button"
-        className="start-button"
-        data-guide-focus="roll-dice"
-        onClick={onRollDice}
-        disabled={isSubmitting || !canRollDice}
-      >
-        {isCurrentPlayerInJail ? "Roll dice (jail)" : "Roll dice"}
-      </button>
+      {!pendingAuction && (
+        <button
+          type="button"
+          className="start-button primary-turn-button"
+          data-guide-focus="roll-dice"
+          onClick={onRollDice}
+          disabled={isSubmitting || !canRollDice}
+        >
+          {isCurrentPlayerInJail ? "Roll dice (jail)" : "Roll dice"}
+        </button>
+      )}
       {canResolvePurchase && (
         <>
           <button
@@ -151,7 +157,7 @@ function BoardCenterActions({
             className="buy-button"
             data-guide-focus="buy-property"
             onClick={onBuyProperty}
-            disabled={isSubmitting}
+            disabled={isSubmitting || !canAffordPendingPurchase}
           >
             Buy property
           </button>

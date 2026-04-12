@@ -91,6 +91,7 @@ function buildSelectedCellInspectorProps({
     inspectedCellQuickActionMessage,
     inspectedCellCanBuy,
     inspectedCellCanSkipPurchase,
+    canAffordPendingPurchase,
     inspectedCellCanUpgrade,
     inspectedCellCanSellUpgrade,
     inspectedCellCanMortgage,
@@ -133,6 +134,7 @@ function buildSelectedCellInspectorProps({
     isSubmitting,
     canBuy: inspectedCellCanBuy,
     canSkipPurchase: inspectedCellCanSkipPurchase,
+    canAffordPurchase: canAffordPendingPurchase,
     canUpgrade: inspectedCellCanUpgrade,
     canSellUpgrade: inspectedCellCanSellUpgrade,
     canMortgage: inspectedCellCanMortgage,
@@ -222,6 +224,7 @@ function buildBoardCenterActionsProps({
     pendingPurchasePlayer,
     pendingPurchase,
     canResolvePurchase,
+    canAffordPendingPurchase,
     pendingAuction,
     pendingAuctionCell,
     pendingAuctionActivePlayer,
@@ -269,6 +272,7 @@ function buildBoardCenterActionsProps({
     pendingPurchasePlayer,
     pendingPurchase,
     canResolvePurchase,
+    canAffordPendingPurchase,
     pendingAuction,
     pendingAuctionCell,
     pendingAuctionActivePlayer,
@@ -361,15 +365,20 @@ function buildAuctionCardProps({
     return null;
   }
 
+  const focusTargetProps = buildFocusTargetProps({
+    sectionKey: "auction",
+    baseClassName: "trade-card",
+    actionGuide,
+    getActionGuideFlashClassName,
+    getActionGuideFlashStyle,
+    setActionSectionRef,
+  });
+
   return {
-    ...buildFocusTargetProps({
-      sectionKey: "auction",
-      baseClassName: "trade-card",
-      actionGuide,
-      getActionGuideFlashClassName,
-      getActionGuideFlashStyle,
-      setActionSectionRef,
-    }),
+    ...focusTargetProps,
+    className: `${focusTargetProps.className} ${
+      actionState.canBidInAuction ? "is-priority-card" : "is-waiting-card"
+    }`,
     cellName: pendingAuctionCell?.name ?? pendingAuction.cell_name,
     initiatorName: pendingAuctionInitiator?.nickname ?? "the active player",
     cellTypeLabel: formatCellType(pendingAuctionCell?.cell_type ?? pendingAuction.cell_type),
@@ -785,7 +794,10 @@ export function buildGameViewProps({
   setters,
   refs,
   constants,
+  uiVisibilityState,
 }) {
+  const { shouldShowCenterActionUi = false } = uiVisibilityState ?? {};
+
   return {
     roomCode: room.room_code,
     turnNumber: room.game?.turn.turn_number,
@@ -796,11 +808,13 @@ export function buildGameViewProps({
       helpers,
       constants,
     }),
-    actionGuideCardProps: buildActionGuideCardProps({
-      actionGuide,
-      hasStoredUiPreference,
-      handlers,
-    }),
+    actionGuideCardProps: shouldShowCenterActionUi
+      ? buildActionGuideCardProps({
+          actionGuide,
+          hasStoredUiPreference,
+          handlers,
+        })
+      : null,
     selectedCellInspectorProps: buildSelectedCellInspectorProps({
       selectedCellState,
       isSubmitting,
@@ -820,32 +834,38 @@ export function buildGameViewProps({
           title: "Latest bankruptcy recap",
         }
       : null,
-    boardCenterActionsProps: buildBoardCenterActionsProps({
-      actionGuide,
-      actionState,
-      playerId,
-      isSubmitting,
-      constants,
-      helpers,
-      handlers,
-      refs,
-    }),
-    pendingPurchaseCardProps: buildPendingPurchaseCardProps({
-      actionGuide,
-      actionState,
-      helpers,
-      refs,
-    }),
-    auctionCardProps: buildAuctionCardProps({
-      actionGuide,
-      actionState,
-      auctionState,
-      isSubmitting,
-      helpers,
-      handlers,
-      setters,
-      refs,
-    }),
+    boardCenterActionsProps: shouldShowCenterActionUi
+      ? buildBoardCenterActionsProps({
+          actionGuide,
+          actionState,
+          playerId,
+          isSubmitting,
+          constants,
+          helpers,
+          handlers,
+          refs,
+        })
+      : null,
+    pendingPurchaseCardProps: shouldShowCenterActionUi
+      ? buildPendingPurchaseCardProps({
+          actionGuide,
+          actionState,
+          helpers,
+          refs,
+        })
+      : null,
+    auctionCardProps: shouldShowCenterActionUi
+      ? buildAuctionCardProps({
+          actionGuide,
+          actionState,
+          auctionState,
+          isSubmitting,
+          helpers,
+          handlers,
+          setters,
+          refs,
+        })
+      : null,
     tradeDeskCardProps: buildTradeDeskCardProps({
       actionGuide,
       actionState,
