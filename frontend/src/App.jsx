@@ -206,6 +206,27 @@ function getRoomVersion(room) {
   return Number.isInteger(room?.room_version) ? room.room_version : null;
 }
 
+function extractBoardCellsFromRoom(room) {
+  return Array.isArray(room?.game?.board) ? room.game.board : null;
+}
+
+function stripBoardFromRoom(room) {
+  if (!room?.game) {
+    return room;
+  }
+
+  const { board, ...dynamicGame } = room.game;
+
+  if (board === undefined) {
+    return room;
+  }
+
+  return {
+    ...room,
+    game: dynamicGame,
+  };
+}
+
 function shouldApplyIncomingRoomState({
   nextRoom,
   prevRoom,
@@ -252,6 +273,7 @@ function App() {
   const [playerId, setPlayerId] = useState("");
   const [playerToken, setPlayerToken] = useState("");
   const [currentRoom, setCurrentRoom] = useState(null);
+  const [staticBoardCells, setStaticBoardCells] = useState([]);
   const [recentEventsSelectedKinds, setRecentEventsSelectedKinds] = useState({});
   const [recentEventsExpandedGroups, setRecentEventsExpandedGroups] = useState({});
   const [freshRecentEventIds, setFreshRecentEventIds] = useState({});
@@ -292,7 +314,7 @@ function App() {
   const isLobbyOpen = currentRoom?.status === "lobby";
   const isGameOpen = currentRoom?.status === "in_game";
   const isFinished = currentRoom?.status === "finished";
-  const boardCells = currentRoom?.game?.board ?? [];
+  const boardCells = staticBoardCells;
   const playerPositions = currentRoom?.game?.positions;
   const propertyOwners = currentRoom?.game?.property_owners ?? {};
   const propertyLevels = currentRoom?.game?.property_levels ?? {};
@@ -547,8 +569,10 @@ function App() {
   }
 
   applyIncomingRoomStateRef.current = (nextRoom, options = {}) => {
+    const nextBoardCells = extractBoardCellsFromRoom(nextRoom);
+    const sanitizedNextRoom = stripBoardFromRoom(nextRoom);
     const shouldApply = shouldApplyIncomingRoomState({
-      nextRoom,
+      nextRoom: sanitizedNextRoom,
       prevRoom: currentRoomRef.current,
       activeRoomCode: activeRoomCodeRef.current,
       expectedRoomCode: options.expectedRoomCode ?? null,
@@ -559,9 +583,13 @@ function App() {
       return false;
     }
 
-    currentRoomRef.current = nextRoom;
-    activeRoomCodeRef.current = nextRoom.room_code ?? null;
-    setCurrentRoom(nextRoom);
+    if (nextBoardCells) {
+      setStaticBoardCells(nextBoardCells);
+    }
+
+    currentRoomRef.current = sanitizedNextRoom;
+    activeRoomCodeRef.current = sanitizedNextRoom.room_code ?? null;
+    setCurrentRoom(sanitizedNextRoom);
     return true;
   };
 
@@ -1378,7 +1406,7 @@ function App() {
   }, []);
 
   useEffect(() => {
-    const nextBoardCells = currentRoom?.game?.board ?? [];
+    const nextBoardCells = boardCells;
     const nextPropertyOwners = currentRoom?.game?.property_owners ?? {};
     const nextPropertyLevels = currentRoom?.game?.property_levels ?? {};
     const nextPropertyMortgaged = currentRoom?.game?.property_mortgaged ?? {};
@@ -1422,7 +1450,7 @@ function App() {
     if (!nextTradeableCells.some((cell) => String(cell.index) === selectedTradePosition)) {
       setSelectedTradePosition(nextTradeableCells[0] ? String(nextTradeableCells[0].index) : "");
     }
-  }, [selectedTradePosition, currentPlayer, currentRoom]);
+  }, [selectedTradePosition, currentPlayer, currentRoom, boardCells]);
 
   useEffect(() => {
     if (!pendingAuction) {
@@ -1447,6 +1475,35 @@ function App() {
         setMessage("Backend connection failed");
       });
   }, []);
+
+  useEffect(() => {
+    if (staticBoardCells.length > 0 || currentRoom?.status !== "in_game") {
+      return;
+    }
+
+    let ignore = false;
+
+    fetch(`${API_BASE_URL}/board`)
+      .then(async (response) => {
+        if (!response.ok) {
+          throw new Error("Board load failed.");
+        }
+
+        return response.json();
+      })
+      .then((data) => {
+        if (ignore || !Array.isArray(data.board)) {
+          return;
+        }
+
+        setStaticBoardCells(data.board);
+      })
+      .catch(() => {});
+
+    return () => {
+      ignore = true;
+    };
+  }, [currentRoom?.status, staticBoardCells.length]);
 
   useEffect(() => {
     const storedSession = loadStoredSession();
@@ -1914,8 +1971,7 @@ function App() {
 
       const roll = data.room.game?.turn.last_roll ?? [];
       const landedPosition = data.room.game?.last_landed_position ?? null;
-      const landedCell =
-        data.room.game?.board?.find((cell) => cell.index === landedPosition) ?? null;
+      const landedCell = boardCells.find((cell) => cell.index === landedPosition) ?? null;
       const effects = data.room.game?.last_effects ?? [];
 
       if (roll.length === 2 && landedCell) {

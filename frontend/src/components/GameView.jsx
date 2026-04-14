@@ -92,39 +92,30 @@ function GameView({
             </div>
           </section>
 
-          <aside className="game-side-panel game-side-panel-inline">
-            <div className="game-column-header">
-              <p className="game-column-kicker">Control desk</p>
-              <h3>Details and actions</h3>
-              <p>Board details, desks, and history stay here so the board remains visible.</p>
-            </div>
-            <div className="game-side-stack">
-              <BoardCenterSummaryCard {...boardCenterSummaryProps} />
+          <div className="game-main-support">
+            <BoardCenterSummaryCard {...boardCenterSummaryProps} />
 
-              {selectedCellInspectorProps && (
-                <SelectedCellInspector {...selectedCellInspectorProps} />
-              )}
+            {selectedCellInspectorProps && (
+              <SelectedCellInspector {...selectedCellInspectorProps} />
+            )}
 
-              {selectedPlayerInspectorProps && (
-                <SelectedPlayerInspector {...selectedPlayerInspectorProps} />
-              )}
+            {selectedPlayerInspectorProps && (
+              <SelectedPlayerInspector {...selectedPlayerInspectorProps} />
+            )}
 
-              {bankruptcySummaryProps && <BankruptcySummaryCard {...bankruptcySummaryProps} />}
+            {bankruptcySummaryProps && <BankruptcySummaryCard {...bankruptcySummaryProps} />}
 
-              {tradeDeskCardProps && <TradeDeskCard {...tradeDeskCardProps} />}
+            {tradeDeskCardProps && <TradeDeskCard {...tradeDeskCardProps} />}
 
-              {mortgageDeskCardProps && <MortgageDeskCard {...mortgageDeskCardProps} />}
+            {mortgageDeskCardProps && <MortgageDeskCard {...mortgageDeskCardProps} />}
 
-              {upgradesDeskCardProps && <UpgradesDeskCard {...upgradesDeskCardProps} />}
+            {upgradesDeskCardProps && <UpgradesDeskCard {...upgradesDeskCardProps} />}
 
-              {drawnCard && <DrawnCardCard card={drawnCard} />}
-            </div>
-          </aside>
+            {drawnCard && <DrawnCardCard card={drawnCard} />}
+
+            <RecentEventsCard {...recentEventsCardProps} />
+          </div>
         </section>
-      </div>
-
-      <div className="game-history-row">
-        <RecentEventsCard {...recentEventsCardProps} />
       </div>
     </section>
   );

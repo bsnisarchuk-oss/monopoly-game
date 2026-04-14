@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from board_data import get_board_cells
 from room_store import (
     bid_in_auction,
     buy_property,
@@ -41,6 +42,7 @@ from schemas import (
     RollDiceRequest,
     SellUpgradeRequest,
     RoomActionResponse,
+    StaticBoardResponse,
     RoomResponse,
     SkipPurchaseRequest,
     StartGameRequest,
@@ -64,6 +66,11 @@ def read_root():
     return {"message": "Backend is working"}
 
 
+@app.get("/board", response_model=StaticBoardResponse)
+def get_board_endpoint():
+    return {"board": get_board_cells()}
+
+
 @app.post("/rooms", response_model=RoomActionResponse)
 def create_room_endpoint(payload: CreateRoomRequest):
     return create_room(payload.nickname)
@@ -75,8 +82,8 @@ def join_room_endpoint(payload: JoinRoomRequest):
 
 
 @app.get("/rooms/{room_code}", response_model=RoomResponse)
-def get_room_endpoint(room_code: str):
-    return get_room(room_code)
+def get_room_endpoint(room_code: str, include_board: bool = False):
+    return get_room(room_code, include_board=include_board)
 
 
 @app.post("/rooms/{room_code}/ready", response_model=RoomActionResponse)

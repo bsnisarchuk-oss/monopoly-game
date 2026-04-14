@@ -330,7 +330,6 @@ def _create_game_state(room: dict) -> dict:
     first_player_id = random.choice(player_ids)
 
     return {
-        "board": get_board_cells(),
         "turn": {
             "current_player_id": first_player_id,
             "turn_number": 1,
@@ -359,6 +358,22 @@ def _create_game_state(room: dict) -> dict:
         "last_landed_position": None,
         "last_effects": [],
     }
+
+
+def _build_room_response(room: dict, include_board: bool = False) -> dict:
+    room_response = room.copy()
+    game = room.get("game")
+
+    if game is None:
+        return room_response
+
+    game_response = game.copy()
+    if include_board:
+        game_response["board"] = get_board_cells()
+    else:
+        game_response.pop("board", None)
+    room_response["game"] = game_response
+    return room_response
 
 
 def _set_last_resolution(
@@ -1154,11 +1169,11 @@ def _remove_player_from_game_state(room: dict, leaving_player_id: str) -> None:
             pending_bankruptcy["creditor_player_id"] = None
 
 
-def _build_action_response(player: dict, room: dict) -> dict:
+def _build_action_response(player: dict, room: dict, include_board: bool = False) -> dict:
     return {
         "player_id": player["player_id"],
         "player_token": player["player_token"],
-        "room": room,
+        "room": _build_room_response(room, include_board=include_board),
     }
 
 
@@ -1205,11 +1220,12 @@ def join_room(room_code: str, nickname: str) -> dict:
     return _build_action_response(new_player, room)
 
 
-def get_room(room_code: str) -> dict:
+def get_room(room_code: str, include_board: bool = False) -> dict:
     normalized_room_code = _normalize_room_code(room_code)
 
     with _rooms_lock:
-        return _find_room_or_raise(normalized_room_code)
+        room = _find_room_or_raise(normalized_room_code)
+        return _build_room_response(room, include_board=include_board)
 
 
 def set_player_ready(room_code: str, player_token: str, is_ready: bool) -> dict:
@@ -1252,7 +1268,7 @@ def start_game(room_code: str, player_token: str) -> dict:
         room["game"] = _create_game_state(room)
         _touch_room(room)
 
-    return _build_action_response(player, room)
+    return _build_action_response(player, room, include_board=room.get("game") is not None)
 
 
 def leave_room(room_code: str, player_token: str) -> dict:
@@ -1304,7 +1320,7 @@ def rejoin_room(room_code: str, player_token: str) -> dict:
         player = _find_player_by_token(room, player_token)
         _touch_room(room, increment_version=False)
 
-    return _build_action_response(player, room)
+    return _build_action_response(player, room, include_board=room.get("game") is not None)
 
 
 def roll_dice(room_code: str, player_token: str) -> dict:

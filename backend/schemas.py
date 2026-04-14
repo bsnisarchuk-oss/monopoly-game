@@ -105,6 +105,10 @@ class BoardCellResponse(BaseModel):
     color_group: str | None = None
 
 
+class StaticBoardResponse(BaseModel):
+    board: list[BoardCellResponse]
+
+
 class TurnStateResponse(BaseModel):
     current_player_id: str
     turn_number: int
@@ -182,7 +186,7 @@ class RecentEventResponse(BaseModel):
 
 
 class GameStateResponse(BaseModel):
-    board: list[BoardCellResponse]
+    board: list[BoardCellResponse] | None = None
     turn: TurnStateResponse
     positions: dict[str, int]
     cash: dict[str, int]

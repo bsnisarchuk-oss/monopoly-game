@@ -81,6 +81,36 @@ class RoomVersionTests(unittest.TestCase):
         self.assertEqual(fetched_version, rolled_version)
         self.assertEqual(fetched_version_again, rolled_version)
 
+    def test_board_is_excluded_from_default_dynamic_room_reads(self):
+        room_code, room, responses = self._create_started_room()
+        active_player = responses[0]
+
+        room_snapshot = room_store.get_room(room_code)
+        with patch("room_store.random.randint", side_effect=[1, 2]):
+            roll_response = room_store.roll_dice(room_code, active_player["player_token"])
+
+        self.assertNotIn("board", room["game"])
+        self.assertNotIn("board", room_snapshot["game"])
+        self.assertNotIn("board", roll_response["room"]["game"])
+
+    def test_board_can_be_requested_for_static_hydration(self):
+        create_response = room_store.create_room("Host")
+        room_code = create_response["room"]["room_code"]
+        join_response = room_store.join_room(room_code, "Guest")
+
+        room_store.set_player_ready(room_code, create_response["player_token"], True)
+        room_store.set_player_ready(room_code, join_response["player_token"], True)
+
+        with patch("room_store.random.choice", return_value=create_response["player_id"]):
+            start_response = room_store.start_game(room_code, create_response["player_token"])
+
+        room_snapshot = room_store.get_room(room_code, include_board=True)
+        rejoin_response = room_store.rejoin_room(room_code, create_response["player_token"])
+
+        self.assertEqual(len(start_response["room"]["game"]["board"]), room_store.BOARD_SIZE)
+        self.assertEqual(len(room_snapshot["game"]["board"]), room_store.BOARD_SIZE)
+        self.assertEqual(len(rejoin_response["room"]["game"]["board"]), room_store.BOARD_SIZE)
+
 
 if __name__ == "__main__":
     unittest.main()
