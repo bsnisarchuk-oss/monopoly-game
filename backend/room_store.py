@@ -1663,7 +1663,7 @@ def pay_jail_fine(room_code: str, player_token: str) -> dict:
         turn = game["turn"]
         player_id = player["player_id"]
         pending_bankruptcy = game.get("pending_bankruptcy")
-        is_bankruptcy_recovery = (
+        (
             pending_bankruptcy is not None and pending_bankruptcy["player_id"] == player_id
         )
 
@@ -1834,6 +1834,41 @@ def buy_property(room_code: str, player_token: str) -> dict:
                 f"Completed the {cell['color_group'].replace('_', ' ')} set. Upgrades unlocked."
             )
 
+        _resume_turn_after_purchase(room, resume_after_player_id)
+        _touch_room_with_event(
+            room,
+            EVENT_KIND_PROPERTY,
+            player_id=player_id,
+            cell_index=position,
+        )
+
+    return _build_action_response(player, room)
+
+
+def auction_pending_purchase(room_code: str, player_token: str) -> dict:
+    normalized_room_code = _normalize_room_code(room_code)
+
+    with _rooms_lock:
+        room = _find_room_or_raise(normalized_room_code)
+        player, game, pending_purchase = _require_pending_purchase(room, player_token)
+        player_id = player["player_id"]
+        resume_after_player_id = _get_pending_purchase_resume_player_id(pending_purchase)
+        position = pending_purchase["position"]
+        cell = _get_board_cell(position)
+
+        game["pending_purchase"] = None
+        game["last_effects"].append(f"Sent {cell['name']} to auction.")
+
+        if _start_auction(room, player_id, position, game["last_effects"]):
+            _touch_room_with_event(
+                room,
+                EVENT_KIND_AUCTION,
+                player_id=player_id,
+                cell_index=position,
+            )
+            return _build_action_response(player, room)
+
+        game["last_effects"].append(f"No one bought {cell['name']}.")
         _resume_turn_after_purchase(room, resume_after_player_id)
         _touch_room_with_event(
             room,

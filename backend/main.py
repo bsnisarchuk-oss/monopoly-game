@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from board_data import get_board_cells
 from room_store import (
+    auction_pending_purchase,
     bid_in_auction,
     buy_property,
     create_room,
@@ -124,6 +125,11 @@ def declare_bankruptcy_endpoint(room_code: str, payload: DeclareBankruptcyReques
 @app.post("/rooms/{room_code}/buy", response_model=RoomActionResponse)
 def buy_property_endpoint(room_code: str, payload: BuyPropertyRequest):
     return buy_property(room_code, payload.player_token)
+
+
+@app.post("/rooms/{room_code}/auction/start", response_model=RoomActionResponse)
+def start_pending_purchase_auction_endpoint(room_code: str, payload: BuyPropertyRequest):
+    return auction_pending_purchase(room_code, payload.player_token)
 
 
 @app.post("/rooms/{room_code}/skip-purchase", response_model=RoomActionResponse)

@@ -39,6 +39,46 @@ class AuctionFlowTests(unittest.TestCase):
             "cell_type": cell["cell_type"],
         }
 
+    def test_two_player_auction_choice_starts_auction_immediately(self):
+        room_code, room, responses = self._create_started_room()
+        host_response, guest_response = responses
+
+        self._set_pending_purchase(room, host_response, position=1)
+        response = room_store.auction_pending_purchase(room_code, host_response["player_token"])
+
+        game = response["room"]["game"]
+        auction = game["pending_auction"]
+
+        self.assertIsNone(game["pending_purchase"])
+        self.assertIsNotNone(auction)
+        self.assertEqual(auction["position"], 1)
+        self.assertEqual(
+            auction["eligible_player_ids"],
+            [guest_response["player_id"], host_response["player_id"]],
+        )
+        self.assertEqual(auction["active_player_id"], guest_response["player_id"])
+        self.assertIn("Auction started for Copper Hollow.", game["last_effects"])
+
+    def test_auction_choice_resumes_turn_if_no_players_can_bid(self):
+        room_code, room, responses = self._create_started_room()
+        host_response, guest_response = responses
+        game = room["game"]
+
+        game["cash"][host_response["player_id"]] = 0
+        game["cash"][guest_response["player_id"]] = 0
+
+        self._set_pending_purchase(room, host_response, position=1)
+        response = room_store.auction_pending_purchase(room_code, host_response["player_token"])
+
+        game = response["room"]["game"]
+
+        self.assertIsNone(game["pending_purchase"])
+        self.assertIsNone(game["pending_auction"])
+        self.assertNotIn(1, game["property_owners"])
+        self.assertEqual(game["turn"]["current_player_id"], guest_response["player_id"])
+        self.assertTrue(game["turn"]["can_roll"])
+        self.assertIn("No one bought Copper Hollow.", game["last_effects"])
+
     def test_two_player_skip_purchase_offers_direct_buy_to_other_player(self):
         room_code, room, responses = self._create_started_room()
         host_response, guest_response = responses

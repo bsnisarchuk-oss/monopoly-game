@@ -401,7 +401,7 @@ class PropertyRuleTests(unittest.TestCase):
         # "Upgrades unlocked" must NOT appear — sibling is mortgaged.
         room_code, room, responses = self._create_started_room()
         host_response, guest_response = responses
-        host_player_id = host_response["player_id"]
+        host_response["player_id"]
         guest_player_id = guest_response["player_id"]
         game = room["game"]
 
