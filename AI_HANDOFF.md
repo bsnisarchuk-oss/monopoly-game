@@ -8,7 +8,7 @@
 
 ## STATUS
 
-`2026-04-19` — worktree разгребён в 3 коммита (Claude Code setup + backend 2-player fallback + frontend redesign), local master на 4 коммита впереди `origin/master` (не запушено). 3 eslint-ошибки от `react-hooks@7.0.1` починены через рефакторинг callback-registrar pattern для `boardCellRefs`/`playerCardRefs` (пропы больше не мутируются) + targeted `eslint-disable` для DOM-measurement в `MovingTokensOverlay`. Следующий коммит + push.
+`2026-04-19` — lint полностью зелёный (**0 errors, 0 warnings**). После `70e10d3` (registrar callbacks) ещё одна правка: стабилизировали fallback-референсы в `App.jsx` через модульные `EMPTY_PLAYERS`/`EMPTY_RECORD` константы — ушли все 16 `exhaustive-deps` warning'ов. Готово к коммиту и пушу.
 
 ---
 
@@ -29,15 +29,10 @@
 
 ## NEXT
 
-1. Закоммитить lint-фикс.
-   файлы: `frontend/src/App.jsx`, `frontend/src/components/gameViewHelpers.js`, `frontend/src/components/BoardTilesLayer.jsx`, `frontend/src/components/BoardPlayersGrid.jsx`, `frontend/src/components/BoardCellTile.jsx`, `frontend/src/components/BoardPlayerCard.jsx`, `frontend/src/components/MovingTokensOverlay.jsx`
-   коммит: `Fix react-hooks/immutability via registrar callbacks`
-   тело: refactor — parent owns refs, children call `registerBoardCellRef(index, el)` / `registerPlayerCardRef(id, el)` instead of mutating the prop; for `MovingTokensOverlay` DOM-measurement add a scoped `eslint-disable-next-line react-hooks/set-state-in-effect` (idiomatic `useLayoutEffect`+`setState` pattern, guarded by signature).
-   проверки до коммита: `npm.cmd run lint` ✅ зелёный; запустить `npm.cmd run build` на Windows; визуально проверить движение фишек и `scrollToRecentEventTarget` (клик по недавнему событию должен скроллить к клетке/игроку).
-
-2. Запушить свежие коммиты на origin.
-   команда: `git push origin master`
-   условие: после коммита с lint-фиксом и зелёного билда.
+1. Закоммитить fix `App.jsx` + `AI_HANDOFF.md`.
+   коммит: `Stabilize fallback refs to silence exhaustive-deps warnings`
+   проверки до коммита: `npm.cmd run lint` (ожидается 0 problems), `npm.cmd run build` (ожидается без регрессий), быстрый визуальный smoke — лобби/игра открываются, покупка/рента работают.
+2. `git push origin master`.
 
 ---
 
@@ -54,10 +49,16 @@
 Последние проверенные изменения с результатами `lint/build/test/smoke`.
 При новой верификации — добавляй сверху, старые записи сдвигай вниз.
 
-- `2026-04-19` — lint-фикс (registrar-callback refactor + scoped disable в `MovingTokensOverlay`):
-  - `npm.cmd run lint` ✅ — 0 errors, 16 warnings (старые `exhaustive-deps` по `App.jsx`, не трогали).
-  - `npm.cmd run build` и `python -m unittest discover tests` — не прогоняли в sandbox (Linux-mount даёт ложные ошибки: rolldown native binding и NUL-bytes в `.py`); проверить на Windows до коммита.
-  - Изменённые файлы: `App.jsx`, `gameViewHelpers.js`, `BoardTilesLayer.jsx`, `BoardPlayersGrid.jsx`, `BoardCellTile.jsx`, `BoardPlayerCard.jsx`, `MovingTokensOverlay.jsx`.
+- `2026-04-19` — стабилизированные fallback-референсы (`App.jsx`):
+  - `EMPTY_PLAYERS = Object.freeze([])` и `EMPTY_RECORD = Object.freeze({})` как модульные константы; 4 fallback'а заменены (`players`, `propertyOwners`, `propertyLevels`, `propertyMortgaged`).
+  - `npx eslint .` ✅ — **0 errors, 0 warnings** (было 16 warnings).
+  - `npm.cmd run build` — ещё не прогоняли на Windows, ожидается без регрессий.
+  - Риск: `Object.freeze` запрещает мутации; grep подтвердил, что в коде нет `.push/.sort/.splice` по этим переменным.
+- `2026-04-19` — lint-фикс запушен на `origin/master` (`70e10d3`):
+  - `npm.cmd run lint` ✅ — 0 errors, 16 warnings (старые `exhaustive-deps`).
+  - `npm.cmd run build` ✅ — vite 47 модулей, 208ms, bundle 318.67 KiB (92.06 KiB gzip) — без регрессий.
+  - Визуальный smoke: движение фишек (`MovingTokensOverlay`) ✅, скролл по клику Recent Events (`scrollToRecentEventTarget`) ✅.
+  - Изменённые файлы: `App.jsx`, `gameViewHelpers.js`, `BoardTilesLayer.jsx`, `BoardPlayersGrid.jsx`, `BoardCellTile.jsx`, `BoardPlayerCard.jsx`, `MovingTokensOverlay.jsx` + `AI_HANDOFF.md`.
 - `2026-04-19` — после трёх коммитов (`08ad32d` setup, `0d792a0` backend, `291c84d` frontend):
   - `npm.cmd run build` ✅ — vite 47 модулей, 277ms.
   - `..\.venv\Scripts\python.exe -m unittest discover tests` ✅ — 67 тестов.

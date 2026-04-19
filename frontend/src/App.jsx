@@ -33,6 +33,8 @@ const PLAYER_TOKEN_COLORS = ["#d94f3d", "#3b7fd4", "#3aaa5e", "#e09b2a"];
 const ACTION_GUIDE_FLASH_MS = 900;
 const ACTION_SECTION_FOCUS_SELECTOR =
   'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+const EMPTY_PLAYERS = Object.freeze([]);
+const EMPTY_RECORD = Object.freeze({});
 
 function loadStoredSession() {
   if (typeof window === "undefined") {
@@ -313,15 +315,15 @@ function App() {
   const isGameOpen = currentRoom?.status === "in_game";
   const isFinished = currentRoom?.status === "finished";
   const boardCells = staticBoardCells;
-  const players = currentRoom?.players ?? [];
+  const players = currentRoom?.players ?? EMPTY_PLAYERS;
   const playerPositions = currentRoom?.game?.positions;
   const currentRoomCash = currentRoom?.game?.cash ?? {};
   const inJailByPlayer = currentRoom?.game?.in_jail ?? {};
   const turnsInJailByPlayer = currentRoom?.game?.turns_in_jail ?? {};
   const doublesStreakByPlayer = currentRoom?.game?.doubles_streak ?? {};
-  const propertyOwners = currentRoom?.game?.property_owners ?? {};
-  const propertyLevels = currentRoom?.game?.property_levels ?? {};
-  const propertyMortgaged = currentRoom?.game?.property_mortgaged ?? {};
+  const propertyOwners = currentRoom?.game?.property_owners ?? EMPTY_RECORD;
+  const propertyLevels = currentRoom?.game?.property_levels ?? EMPTY_RECORD;
+  const propertyMortgaged = currentRoom?.game?.property_mortgaged ?? EMPTY_RECORD;
   const pendingPurchase = currentRoom?.game?.pending_purchase ?? null;
   const pendingTrade = currentRoom?.game?.pending_trade ?? null;
   const pendingAuction = currentRoom?.game?.pending_auction ?? null;
