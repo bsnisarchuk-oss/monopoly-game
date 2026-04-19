@@ -1,5 +1,4 @@
-.claude/
-AI_HANDOFF.md
+.claude/settings.local.json
 
 .venv/
 .vscode/

@@ -1,32 +1,104 @@
 {
   "permissions": {
     "allow": [
-      "Bash(.venv/Scripts/python.exe -c \"import uvicorn, fastapi; print\\('deps OK'\\)\")",
-      "Bash(.venv/Scripts/python.exe -m uvicorn main:app --host 127.0.0.1 --port 8000)",
-      "Bash(curl -s http://127.0.0.1:8000/)",
-      "Bash(npm run:*)",
-      "Bash(curl -s http://localhost:5173/)",
-      "Bash(npm.cmd run:*)",
-      "Bash(npx eslint:*)",
-      "Bash(ls u:/Monopoly/backend/*.py)",
-      "Bash(.venv/Scripts/uvicorn.exe main:app --port 8000)",
-      "Bash(curl -s -X POST http://127.0.0.1:8000/rooms/create -H 'Content-Type: application/json' -d '{\"nickname\": \"Александр\"}')",
-      "Bash(python -c \"import sys,json; print\\(json.dumps\\(json.load\\(sys.stdin\\), indent=2, ensure_ascii=False\\)\\)\")",
-      "Bash(curl -s http://127.0.0.1:8000/docs)",
-      "Bash(curl -s http://127.0.0.1:8000/openapi.json)",
-      "Bash(python -c \"import sys,json; d=json.load\\(sys.stdin\\); [print\\(m.upper\\(\\), p\\) for p,v in d['paths'].items\\(\\) for m in v]\")",
-      "Bash(curl -s -X POST http://127.0.0.1:8000/rooms -H \"Content-Type: application/json\" -d \"{\\\\\"nickname\\\\\": \\\\\"Александр\\\\\"}\")",
-      "Bash(python -c ':*)",
+      "Bash(git status)",
+      "Bash(git status:*)",
+      "Bash(git diff)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git show:*)",
+      "Bash(git branch:*)",
       "Bash(git add:*)",
+      "Bash(git commit -m :*)",
       "Bash(git commit -m ':*)",
-      "Bash(ls u:/Monopoly/*.md u:/Monopoly/README*)",
-      "Bash(git -C u:/Monopoly log --oneline -10)",
-      "Bash(git -C u:/Monopoly log --oneline)",
-      "Bash(git -C u:/Monopoly diff --stat HEAD)",
+      "Bash(git stash:*)",
+      "Bash(git -C u:/Monopoly log:*)",
+      "Bash(git -C u:/Monopoly diff:*)",
+
+      "Bash(ls:*)",
+      "Bash(cat:*)",
+      "Bash(type:*)",
+      "Bash(dir:*)",
+      "Bash(cd:*)",
+      "Bash(pwd)",
+
+      "Bash(.venv/Scripts/python.exe:*)",
+      "Bash(.venv/Scripts/pip.exe:*)",
+      "Bash(.venv/Scripts/uvicorn.exe:*)",
       "Bash(.venv/Scripts/activate.bat)",
-      "Bash(uvicorn main:app --reload)",
-      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:5173/)",
-      "Bash(u:/Monopoly/backend/.venv/Scripts/uvicorn.exe main:app --reload --app-dir u:/Monopoly/backend)"
+      "Bash(.venv\\Scripts\\python.exe:*)",
+      "Bash(..\\.venv\\Scripts\\python.exe:*)",
+      "Bash(u:/Monopoly/backend/.venv/Scripts/uvicorn.exe:*)",
+      "Bash(python -m unittest:*)",
+      "Bash(python -m pytest:*)",
+      "Bash(python -m ruff:*)",
+      "Bash(python -c :*)",
+      "Bash(python -c ':*)",
+      "Bash(uvicorn main:app:*)",
+
+      "Bash(npm.cmd run:*)",
+      "Bash(npm run:*)",
+      "Bash(npx eslint:*)",
+      "Bash(npx.cmd eslint:*)",
+
+      "Bash(curl -s:*)",
+      "Bash(curl -s -o:*)",
+      "Bash(curl -s -X:*)",
+
+      "Bash(start-backend.cmd)",
+      "Bash(start-frontend.cmd)",
+      "Bash(start.bat)"
+    ],
+    "deny": [
+      "Bash(rm -rf:*)",
+      "Bash(rmdir /s:*)",
+      "Bash(del /s:*)",
+      "Bash(git push --force:*)",
+      "Bash(git push -f:*)",
+      "Bash(git reset --hard:*)",
+      "Bash(git clean -fd:*)",
+      "Bash(git checkout -- :*)",
+      "Bash(git branch -D:*)",
+      "Edit(.venv/**)",
+      "Edit(node_modules/**)",
+      "Edit(.git/**)",
+      "Write(.venv/**)",
+      "Write(node_modules/**)"
+    ]
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell -NoProfile -ExecutionPolicy Bypass -File .claude/hooks/session-start.ps1"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell -NoProfile -ExecutionPolicy Bypass -File .claude/hooks/post-edit.ps1"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell -NoProfile -ExecutionPolicy Bypass -File .claude/hooks/pre-bash.ps1"
+          }
+        ]
+      }
     ]
   }
 }
