@@ -1280,6 +1280,92 @@ h1 {
   margin-top: 6px;
 }
 
+.property-purchase-decision {
+  display: grid;
+  gap: 18px;
+  padding: 22px;
+  border-radius: 22px;
+  background: linear-gradient(180deg, rgba(255, 255, 252, 0.99), rgba(244, 248, 255, 0.97));
+  border: 1px solid rgba(47, 67, 128, 0.12);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.74),
+    0 22px 38px rgba(15, 22, 33, 0.2);
+}
+
+.property-purchase-decision-copy {
+  display: grid;
+  gap: 10px;
+}
+
+.property-purchase-decision h3,
+.property-purchase-decision-summary {
+  margin: 0;
+}
+
+.property-purchase-decision h3 {
+  font-size: clamp(1.35rem, 2.6vw, 1.9rem);
+  letter-spacing: -0.04em;
+  color: #203052;
+}
+
+.property-purchase-decision-summary {
+  color: #4b5d7c;
+  line-height: 1.5;
+  font-weight: 700;
+}
+
+.property-purchase-decision-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.property-purchase-decision-button {
+  min-height: 56px;
+  border: none;
+  border-radius: 16px;
+  padding: 14px 18px;
+  cursor: pointer;
+  font-size: 1rem;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+  transition:
+    transform 140ms ease,
+    box-shadow 140ms ease,
+    background-color 140ms ease,
+    opacity 140ms ease;
+}
+
+.property-purchase-decision-button:not(:disabled):hover {
+  transform: translateY(-1px);
+}
+
+.property-purchase-decision-button:focus-visible {
+  outline: 3px solid rgba(62, 92, 166, 0.24);
+  outline-offset: 3px;
+}
+
+.property-purchase-decision-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.68;
+}
+
+.property-purchase-decision-button-buy {
+  color: #fffaf1;
+  background: linear-gradient(135deg, #2b5a4d 0%, #46a387 100%);
+  box-shadow:
+    0 12px 22px rgba(40, 120, 107, 0.18),
+    inset 0 1px 0 rgba(255, 255, 255, 0.12);
+}
+
+.property-purchase-decision-button-auction {
+  color: #2c3f61;
+  background: rgba(232, 236, 241, 0.98);
+  box-shadow:
+    inset 0 0 0 1px rgba(47, 67, 128, 0.1),
+    0 10px 18px rgba(15, 22, 33, 0.08);
+}
+
 .trade-card {
   margin-top: 14px;
   padding-top: 14px;
@@ -1722,6 +1808,7 @@ h1 {
 }
 
 .monopoly-board {
+  position: relative;
   width: 100%;
   aspect-ratio: 1;
   display: grid;
@@ -2131,6 +2218,27 @@ h1 {
   user-select: none;
 }
 
+.player-token.is-overlay {
+  position: absolute;
+  left: 0;
+  top: 0;
+  margin-right: 0;
+  transform: translate3d(var(--player-token-overlay-x, 0), var(--player-token-overlay-y, 0), 0)
+    translate(-50%, -50%) scale(var(--player-token-overlay-scale, 1));
+  will-change: transform;
+  box-shadow:
+    0 0 0 3px rgba(255, 255, 255, 0.96),
+    0 0 0 5px var(--player-token-color, #304467),
+    0 10px 22px rgba(31, 42, 43, 0.24);
+}
+
+.moving-tokens-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  pointer-events: none;
+}
+
 .player-token-label {
   position: absolute;
   width: 1px;
@@ -2177,7 +2285,8 @@ h1 {
 }
 
 .player-token.is-moving {
-  animation: token-arrive 280ms cubic-bezier(0.33, 0, 0.66, 1);
+  animation: token-arrive var(--token-move-duration, 340ms) cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: transform;
 }
 
 .player-token.is-moving:not(.is-active-turn) {
@@ -2192,8 +2301,8 @@ h1 {
     transform: translate3d(var(--token-move-from-x, 0), var(--token-move-from-y, 0), 0) scale(1);
   }
 
-  40% {
-    transform: translate3d(0, -5px, 0) scale(1.08);
+  58% {
+    transform: translate3d(0, -6px, 0) scale(1.06);
   }
 
   100% {
@@ -2882,6 +2991,10 @@ h1 {
   gap: 10px;
 }
 
+.board-center-spotlight .property-purchase-decision {
+  margin-top: 0;
+}
+
 .board-center-spotlight.is-auction-active {
   padding-bottom: 4px;
 }
@@ -3164,6 +3277,17 @@ h1 {
     gap: 8px;
   }
 
+  .property-purchase-decision {
+    gap: 16px;
+    padding: 18px;
+    border-radius: 18px;
+  }
+
+  .property-purchase-decision-button {
+    min-height: 50px;
+    padding: 12px 16px;
+  }
+
   .board-center-spotlight .board-center-actions,
   .board-center-spotlight .purchase-card,
   .board-center-spotlight .trade-card {
@@ -3370,6 +3494,10 @@ h1 {
   .board-center-spotlight {
     width: 100%;
     gap: 10px;
+  }
+
+  .property-purchase-decision-actions {
+    grid-template-columns: 1fr;
   }
 
   .primary-turn-button {

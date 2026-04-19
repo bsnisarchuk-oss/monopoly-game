@@ -89,9 +89,6 @@ function buildSelectedCellInspectorProps({
     inspectedCellLinkedEventCount,
     inspectedCellJailGroups,
     inspectedCellQuickActionMessage,
-    inspectedCellCanBuy,
-    inspectedCellCanSkipPurchase,
-    canAffordPendingPurchase,
     inspectedCellCanUpgrade,
     inspectedCellCanSellUpgrade,
     inspectedCellCanMortgage,
@@ -103,8 +100,6 @@ function buildSelectedCellInspectorProps({
   const { formatCellType, getPlayerColor, getMortgageValue, getUpgradeCost } = helpers;
   const {
     clearRecentEventFocus,
-    handleBuyProperty,
-    handleSkipPurchase,
     handleUpgradeProperty,
     handleSellUpgradeProperty,
     handleMortgageProperty,
@@ -132,9 +127,6 @@ function buildSelectedCellInspectorProps({
     jailGroups: inspectedCellJailGroups,
     quickActionMessage: inspectedCellQuickActionMessage,
     isSubmitting,
-    canBuy: inspectedCellCanBuy,
-    canSkipPurchase: inspectedCellCanSkipPurchase,
-    canAffordPurchase: canAffordPendingPurchase,
     canUpgrade: inspectedCellCanUpgrade,
     canSellUpgrade: inspectedCellCanSellUpgrade,
     canMortgage: inspectedCellCanMortgage,
@@ -142,8 +134,6 @@ function buildSelectedCellInspectorProps({
     canUseTradeDesk: inspectedCellCanUseTradeDesk,
     isSelectedInTradeDesk: inspectedCellIsSelectedInTradeDesk,
     onClear: clearRecentEventFocus,
-    onBuyProperty: handleBuyProperty,
-    onSkipPurchase: handleSkipPurchase,
     onUpgrade: () => handleUpgradeProperty(inspectedCell.index),
     onSellUpgrade: () => handleSellUpgradeProperty(inspectedCell.index),
     onMortgage: () => handleMortgageProperty(inspectedCell.index),
@@ -220,11 +210,6 @@ function buildBoardCenterActionsProps({
   refs,
 }) {
   const {
-    pendingPurchaseCell,
-    pendingPurchasePlayer,
-    pendingPurchase,
-    canResolvePurchase,
-    canAffordPendingPurchase,
     pendingAuction,
     pendingAuctionCell,
     pendingAuctionActivePlayer,
@@ -253,8 +238,6 @@ function buildBoardCenterActionsProps({
     handlePayJailFine,
     handleDeclareBankruptcy,
     handleRollDice,
-    handleBuyProperty,
-    handleSkipPurchase,
     handleLeaveRoom,
   } = handlers;
   const { setActionSectionRef } = refs;
@@ -268,11 +251,6 @@ function buildBoardCenterActionsProps({
       getActionGuideFlashStyle,
       setActionSectionRef,
     }),
-    pendingPurchaseCell,
-    pendingPurchasePlayer,
-    pendingPurchase,
-    canResolvePurchase,
-    canAffordPendingPurchase,
     pendingAuction,
     pendingAuctionCell,
     pendingAuctionActivePlayer,
@@ -300,39 +278,43 @@ function buildBoardCenterActionsProps({
     onPayJailFine: handlePayJailFine,
     onDeclareBankruptcy: handleDeclareBankruptcy,
     onRollDice: handleRollDice,
-    onBuyProperty: handleBuyProperty,
-    onSkipPurchase: handleSkipPurchase,
     onLeaveRoom: handleLeaveRoom,
   };
 }
 
-function buildPendingPurchaseCardProps({
+function buildPropertyPurchaseDecisionProps({
   actionGuide,
   actionState,
+  isSubmitting,
+  handlers,
   helpers,
   refs,
 }) {
-  const { pendingPurchaseCell, pendingPurchasePlayer, pendingPurchase } = actionState;
-  const { formatCellType, getActionGuideFlashClassName, getActionGuideFlashStyle } = helpers;
+  const { pendingPurchaseCell, pendingPurchase, canResolvePurchase, canAffordPendingPurchase } =
+    actionState;
+  const { handleBuyProperty, handleAuctionProperty } = handlers;
+  const { getActionGuideFlashClassName, getActionGuideFlashStyle } = helpers;
   const { setActionSectionRef } = refs;
 
-  if (!pendingPurchaseCell) {
+  if (!pendingPurchaseCell || !canResolvePurchase) {
     return null;
   }
 
   return {
     ...buildFocusTargetProps({
       sectionKey: "purchase",
-      baseClassName: "purchase-card",
+      baseClassName: "property-purchase-decision",
       actionGuide,
       getActionGuideFlashClassName,
       getActionGuideFlashStyle,
       setActionSectionRef,
     }),
-    playerName: pendingPurchasePlayer?.nickname ?? "A player",
     cellName: pendingPurchaseCell.name,
     price: pendingPurchase?.price,
-    cellTypeLabel: formatCellType(pendingPurchaseCell.cell_type),
+    canAffordPurchase: canAffordPendingPurchase,
+    isSubmitting,
+    onBuy: handleBuyProperty,
+    onAuction: handleAuctionProperty,
   };
 }
 
@@ -678,13 +660,12 @@ function buildBoardTilesLayerProps({
   const {
     boardCells,
     playerPositions,
-    cellRecentEventCounts,
+    movingPlayerIds,
     propertyOwners,
     propertyMortgaged,
     propertyLevels,
     focusedEventCellIndex,
     movedCellIndexSet,
-    getPlayerById,
   } = boardState;
   const { lastLandedCell } = summaryState;
   const { jailPosition } = constants;
@@ -696,9 +677,9 @@ function buildBoardTilesLayerProps({
     boardCells,
     players: room.players,
     playerPositions,
+    hiddenPlayerIds: movingPlayerIds,
     inJailByPlayer: room.game?.in_jail ?? {},
     jailPosition,
-    cellRecentEventCounts,
     propertyOwners,
     propertyMortgaged,
     propertyLevels,
@@ -706,17 +687,26 @@ function buildBoardTilesLayerProps({
     focusedEventCellIndex,
     movedCellIndexSet,
     currentPlayerId: playerId,
-    getPlayerById,
     getPlayerColor,
-    onTileRef: (cellIndex, element) => {
-      if (element) {
-        boardCellRefs.current[cellIndex] = element;
-      } else {
-        delete boardCellRefs.current[cellIndex];
-      }
-    },
+    boardCellRefs,
     onFocusCell: handleBoardCellFocus,
     renderPlayerToken,
+  };
+}
+
+function buildMovingTokensOverlayProps({ room, boardState, helpers, refs }) {
+  const { movingPlayerIds = [], movingTokenEffects } = boardState;
+
+  if (movingPlayerIds.length === 0) {
+    return null;
+  }
+
+  return {
+    boardRef: refs.boardRef,
+    boardCellRefs: refs.boardCellRefs,
+    players: room.players,
+    movingTokenEffects,
+    getPlayerColor: helpers.getPlayerColor,
   };
 }
 
@@ -761,13 +751,7 @@ function buildBoardPlayersGridProps({
     getOwnedCellsByPlayer,
     getMortgagedOwnedCellCount,
     onFocusPlayer: handlePlayerCardFocus,
-    onPlayerCardRef: (playerIdValue, element) => {
-      if (element) {
-        playerCardRefs.current[playerIdValue] = element;
-      } else {
-        delete playerCardRefs.current[playerIdValue];
-      }
-    },
+    playerCardRefs,
   };
 }
 
@@ -797,11 +781,22 @@ export function buildGameViewProps({
   uiVisibilityState,
 }) {
   const { shouldShowCenterActionUi = false } = uiVisibilityState ?? {};
+  const propertyPurchaseDecisionProps = shouldShowCenterActionUi
+    ? buildPropertyPurchaseDecisionProps({
+        actionGuide,
+        actionState,
+        isSubmitting,
+        handlers,
+        helpers,
+        refs,
+      })
+    : null;
 
   return {
     roomCode: room.room_code,
     turnNumber: room.game?.turn.turn_number,
     playerId,
+    boardRef: refs.boardRef,
     boardCenterSummaryProps: buildBoardCenterSummaryProps({
       room,
       summaryState,
@@ -834,7 +829,8 @@ export function buildGameViewProps({
           title: "Latest bankruptcy recap",
         }
       : null,
-    boardCenterActionsProps: shouldShowCenterActionUi
+    propertyPurchaseDecisionProps,
+    boardCenterActionsProps: shouldShowCenterActionUi && !propertyPurchaseDecisionProps
       ? buildBoardCenterActionsProps({
           actionGuide,
           actionState,
@@ -843,14 +839,6 @@ export function buildGameViewProps({
           constants,
           helpers,
           handlers,
-          refs,
-        })
-      : null,
-    pendingPurchaseCardProps: shouldShowCenterActionUi
-      ? buildPendingPurchaseCardProps({
-          actionGuide,
-          actionState,
-          helpers,
           refs,
         })
       : null,
@@ -911,6 +899,12 @@ export function buildGameViewProps({
       handlers,
       refs,
       constants,
+    }),
+    movingTokensOverlayProps: buildMovingTokensOverlayProps({
+      room,
+      boardState,
+      helpers,
+      refs,
     }),
     boardPlayersGridProps: buildBoardPlayersGridProps({
       room,

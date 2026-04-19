@@ -14,9 +14,6 @@ function SelectedCellInspector({
   jailGroups = null,
   quickActionMessage = null,
   isSubmitting = false,
-  canBuy = false,
-  canSkipPurchase = false,
-  canAffordPurchase = true,
   canUpgrade = false,
   canSellUpgrade = false,
   canMortgage = false,
@@ -24,8 +21,6 @@ function SelectedCellInspector({
   canUseTradeDesk = false,
   isSelectedInTradeDesk = false,
   onClear,
-  onBuyProperty,
-  onSkipPurchase,
   onUpgrade,
   onSellUpgrade,
   onMortgage,
@@ -33,8 +28,6 @@ function SelectedCellInspector({
   onSelectForTrade,
 }) {
   const hasQuickActions =
-    canBuy ||
-    canSkipPurchase ||
     canUpgrade ||
     canSellUpgrade ||
     canMortgage ||
@@ -125,26 +118,6 @@ function SelectedCellInspector({
       </div>
       {hasQuickActions && (
         <div className="cell-inspector-actions">
-          {canBuy && (
-            <button
-              type="button"
-              className="buy-button"
-              onClick={onBuyProperty}
-              disabled={isSubmitting || !canAffordPurchase}
-            >
-              Buy property
-            </button>
-          )}
-          {canSkipPurchase && (
-            <button
-              type="button"
-              className="pass-button"
-              onClick={onSkipPurchase}
-              disabled={isSubmitting}
-            >
-              Pass on purchase
-            </button>
-          )}
           {canUpgrade && (
             <button
               type="button"

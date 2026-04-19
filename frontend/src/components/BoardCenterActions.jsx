@@ -2,11 +2,6 @@ function BoardCenterActions({
   sectionRef,
   className,
   style,
-  pendingPurchaseCell = null,
-  pendingPurchasePlayer = null,
-  pendingPurchase = null,
-  canResolvePurchase = false,
-  canAffordPendingPurchase = true,
   pendingAuction = null,
   pendingAuctionCell = null,
   pendingAuctionActivePlayer = null,
@@ -33,8 +28,6 @@ function BoardCenterActions({
   onPayJailFine,
   onDeclareBankruptcy,
   onRollDice,
-  onBuyProperty,
-  onSkipPurchase,
   onLeaveRoom,
 }) {
   const auctionCellName = pendingAuctionCell?.name ?? pendingAuction?.cell_name ?? "this cell";
@@ -51,19 +44,6 @@ function BoardCenterActions({
             : `Auction active for ${auctionCellName}. Waiting for ${
                 pendingAuctionActivePlayer?.nickname ?? "the active player"
               }.`}
-        </p>
-      )}
-      {pendingPurchaseCell && !canResolvePurchase && (
-        <p className="purchase-note">
-          Waiting for {pendingPurchasePlayer?.nickname ?? "the active player"} to buy or pass on{" "}
-          {pendingPurchaseCell.name}.
-        </p>
-      )}
-      {canResolvePurchase && (
-        <p className="purchase-note">
-          {canAffordPendingPurchase
-            ? `You can buy ${pendingPurchaseCell.name} for $${pendingPurchase?.price} or pass.`
-            : `You do not have enough cash to buy ${pendingPurchaseCell.name} right now. Pass on purchase to continue.`}
         </p>
       )}
       {pendingTrade && !canAcceptTrade && !canRejectTrade && (
@@ -149,28 +129,6 @@ function BoardCenterActions({
         >
           {isCurrentPlayerInJail ? "Roll dice (jail)" : "Roll dice"}
         </button>
-      )}
-      {canResolvePurchase && (
-        <>
-          <button
-            type="button"
-            className="buy-button"
-            data-guide-focus="buy-property"
-            onClick={onBuyProperty}
-            disabled={isSubmitting || !canAffordPendingPurchase}
-          >
-            Buy property
-          </button>
-          <button
-            type="button"
-            className="pass-button"
-            data-guide-focus="skip-purchase"
-            onClick={onSkipPurchase}
-            disabled={isSubmitting}
-          >
-            Pass on purchase
-          </button>
-        </>
       )}
       <button
         type="button"

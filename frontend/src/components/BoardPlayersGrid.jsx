@@ -1,3 +1,4 @@
+import { memo } from "react";
 import BoardPlayerCard from "./BoardPlayerCard";
 import { formatLinkedEventLabel } from "./recentEventsHelpers";
 
@@ -18,7 +19,7 @@ function BoardPlayersGrid({
   getOwnedCellsByPlayer,
   getMortgagedOwnedCellCount,
   onFocusPlayer,
-  onPlayerCardRef,
+  playerCardRefs,
 }) {
   return (
     <section className="board-grid">
@@ -59,8 +60,8 @@ function BoardPlayersGrid({
             mortgagedCellCount={playerMortgagedCellCount}
             playerColor={playerColor}
             statusLabel={statusLabel}
-            onFocus={() => onFocusPlayer(player)}
-            cardRef={(element) => onPlayerCardRef(player.player_id, element)}
+            onFocusPlayer={onFocusPlayer}
+            playerCardRefs={playerCardRefs}
           />
         );
       })}
@@ -68,4 +69,4 @@ function BoardPlayersGrid({
   );
 }
 
-export default BoardPlayersGrid;
+export default memo(BoardPlayersGrid);

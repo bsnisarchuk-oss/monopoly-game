@@ -1,3 +1,5 @@
+import { memo, useCallback, useMemo } from "react";
+
 const CELL_ICONS = {
   start: "GO",
   railroad: "🚂",
@@ -43,29 +45,75 @@ function getBandLabel(cell, ownerPlayer, propertyLevel) {
 function BoardCellTile({
   cell,
   boardSide,
+  row,
+  column,
   groupClass = "",
   isLanded = false,
   isFocused = false,
   isMoveTarget = false,
   isOwnedByYou = false,
   ownerPlayer = null,
-  tileStyle,
+  ownerColor = null,
+  ownerTint = null,
+  ownerTintStrong = null,
+  ownerShadow = null,
   isMortgaged = false,
   propertyLevel = 0,
   isJailCell = false,
   visitingPlayers = [],
   jailPlayers = [],
   occupants = [],
-  tileRef,
-  onFocus,
+  boardCellRefs,
+  onFocusCell,
   renderPlayerToken,
 }) {
   const cellIcon = CELL_ICONS[cell.cell_type] ?? null;
   const bandLabel = getBandLabel(cell, ownerPlayer, propertyLevel);
+  const tileStyle = useMemo(
+    () => ({
+      gridRow: row,
+      gridColumn: column,
+      ...(ownerColor
+        ? {
+            "--cell-owner-color": ownerColor,
+            "--cell-owner-tint": ownerTint,
+            "--cell-owner-tint-strong": ownerTintStrong,
+            "--cell-owner-shadow": ownerShadow,
+          }
+        : {}),
+    }),
+    [column, ownerColor, ownerShadow, ownerTint, ownerTintStrong, row],
+  );
+  const handleTileRef = useCallback(
+    (element) => {
+      if (!boardCellRefs?.current) {
+        return;
+      }
+
+      if (element) {
+        boardCellRefs.current[cell.index] = element;
+      } else {
+        delete boardCellRefs.current[cell.index];
+      }
+    },
+    [boardCellRefs, cell.index],
+  );
+  const handleFocus = useCallback(() => {
+    onFocusCell?.(cell);
+  }, [cell, onFocusCell]);
+  const handleKeyDown = useCallback(
+    (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        handleFocus();
+      }
+    },
+    [handleFocus],
+  );
 
   return (
     <article
-      ref={tileRef}
+      ref={handleTileRef}
       className={`cell-tile cell-side-${boardSide} ${groupClass} ${
         isLanded ? "is-landed" : ""
       } ${isFocused ? "is-focused" : ""} ${isMoveTarget ? "is-move-target" : ""} ${
@@ -75,13 +123,8 @@ function BoardCellTile({
       } is-actionable`}
       role="button"
       tabIndex={0}
-      onClick={onFocus}
-      onKeyDown={(event) => {
-        if (event.key === "Enter" || event.key === " ") {
-          event.preventDefault();
-          onFocus();
-        }
-      }}
+      onClick={handleFocus}
+      onKeyDown={handleKeyDown}
       style={tileStyle}
     >
       <span className={`cell-band cell-band-${cell.cell_type}`} aria-hidden="true">
@@ -150,4 +193,4 @@ function BoardCellTile({
   );
 }
 
-export default BoardCellTile;
+export default memo(BoardCellTile);

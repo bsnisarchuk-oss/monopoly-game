@@ -1,8 +1,8 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { buildTokenMovementPath } from "../components/boardHelpers";
 
-const TOKEN_MOVE_STEP_MS = 280;
-const TOKEN_MOVE_FINISH_BUFFER_MS = 60;
+const TOKEN_MOVE_STEP_MS = 340;
+const TOKEN_MOVE_FINISH_BUFFER_MS = 90;
 
 export function useTokenMovement({ currentRoom, currentRoomCode, playerPositions }) {
   const [movingTokenEffects, setMovingTokenEffects] = useState({});
@@ -64,9 +64,10 @@ export function useTokenMovement({ currentRoom, currentRoomCode, playerPositions
         }
 
         nextMovementEffects.push({
+          animationId: Date.now() + Math.random(),
           playerId: player.player_id,
-          fromPosition: previousPosition,
-          path: movementPath,
+          path: [previousPosition, ...movementPath],
+          stepDurationMs: TOKEN_MOVE_STEP_MS,
         });
       }
     }
@@ -80,36 +81,11 @@ export function useTokenMovement({ currentRoom, currentRoomCode, playerPositions
     for (const movementEffect of nextMovementEffects) {
       clearTokenMovementTimers(movementEffect.playerId);
 
-      const timeoutIds = [];
-      const firstStepPosition = movementEffect.path[0];
-
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setMovingTokenEffects((current) => ({
         ...current,
-        [movementEffect.playerId]: {
-          animationId: 1,
-          displayPosition: firstStepPosition,
-          fromPosition: movementEffect.fromPosition,
-          toPosition: firstStepPosition,
-        },
+        [movementEffect.playerId]: movementEffect,
       }));
-
-      movementEffect.path.slice(1).forEach((stepPosition, pathIndex) => {
-        const stepFromPosition = movementEffect.path[pathIndex];
-        const timeoutId = window.setTimeout(() => {
-          setMovingTokenEffects((current) => ({
-            ...current,
-            [movementEffect.playerId]: {
-              animationId: pathIndex + 2,
-              displayPosition: stepPosition,
-              fromPosition: stepFromPosition,
-              toPosition: stepPosition,
-            },
-          }));
-        }, (pathIndex + 1) * TOKEN_MOVE_STEP_MS);
-
-        timeoutIds.push(timeoutId);
-      });
 
       const cleanupTimeoutId = window.setTimeout(() => {
         setMovingTokenEffects((current) => {
@@ -123,10 +99,9 @@ export function useTokenMovement({ currentRoom, currentRoomCode, playerPositions
         });
 
         clearTokenMovementTimers(movementEffect.playerId);
-      }, movementEffect.path.length * TOKEN_MOVE_STEP_MS + TOKEN_MOVE_FINISH_BUFFER_MS);
+      }, (movementEffect.path.length - 1) * TOKEN_MOVE_STEP_MS + TOKEN_MOVE_FINISH_BUFFER_MS);
 
-      timeoutIds.push(cleanupTimeoutId);
-      tokenMovementTimeoutsRef.current[movementEffect.playerId] = timeoutIds;
+      tokenMovementTimeoutsRef.current[movementEffect.playerId] = [cleanupTimeoutId];
     }
   }, [currentRoomCode, currentRoom, playerPositions]);
 
@@ -136,25 +111,21 @@ export function useTokenMovement({ currentRoom, currentRoomCode, playerPositions
     };
   }, []);
 
-  const movedCellIndexSet = new Set(
-    Object.values(movingTokenEffects)
-      .map((effect) => effect.toPosition)
-      .filter((position) => Number.isInteger(position)),
+  const movedCellIndexSet = useMemo(
+    () =>
+      new Set(
+        Object.values(movingTokenEffects)
+          .map((effect) => effect.path?.[effect.path.length - 1])
+          .filter((position) => Number.isInteger(position)),
+      ),
+    [movingTokenEffects],
+  );
+  const movingPlayerIds = useMemo(
+    () => Object.keys(movingTokenEffects),
+    [movingTokenEffects],
   );
 
-  const renderedPlayerPositions =
-    currentRoom?.players.reduce((acc, player) => {
-      const animatedPosition = movingTokenEffects[player.player_id]?.displayPosition;
-      const actualPosition = playerPositions?.[player.player_id];
+  const renderedPlayerPositions = playerPositions ?? {};
 
-      if (Number.isInteger(animatedPosition)) {
-        acc[player.player_id] = animatedPosition;
-      } else if (Number.isInteger(actualPosition)) {
-        acc[player.player_id] = actualPosition;
-      }
-
-      return acc;
-    }, {}) ?? {};
-
-  return { movingTokenEffects, movedCellIndexSet, renderedPlayerPositions };
+  return { movingPlayerIds, movingTokenEffects, movedCellIndexSet, renderedPlayerPositions };
 }

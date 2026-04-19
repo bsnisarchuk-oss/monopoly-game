@@ -1,3 +1,4 @@
+import { memo, useCallback, useMemo } from "react";
 import { formatLinkedEventCount } from "./recentEventsHelpers";
 import { getPlayerTokenLabel, hexToRgba } from "./utils";
 
@@ -18,38 +19,63 @@ function BoardPlayerCard({
   mortgagedCellCount = 0,
   playerColor = null,
   statusLabel,
-  onFocus,
-  cardRef,
+  onFocusPlayer,
+  playerCardRefs,
 }) {
   const statusToneClass = isCurrentTurn
     ? "is-active"
     : statusLabel === "In jail"
       ? "is-warning"
       : "is-neutral";
-  const playerCardStyle = playerColor
-    ? {
-        "--player-card-accent": playerColor,
-        "--player-card-accent-soft": hexToRgba(playerColor, 0.2),
-        "--player-card-accent-strong": hexToRgba(playerColor, 0.34),
+  const playerCardStyle = useMemo(
+    () =>
+      playerColor
+        ? {
+            "--player-card-accent": playerColor,
+            "--player-card-accent-soft": hexToRgba(playerColor, 0.2),
+            "--player-card-accent-strong": hexToRgba(playerColor, 0.34),
+          }
+        : undefined,
+    [playerColor],
+  );
+  const handleCardRef = useCallback(
+    (element) => {
+      if (!playerCardRefs?.current) {
+        return;
       }
-    : undefined;
+
+      if (element) {
+        playerCardRefs.current[player.player_id] = element;
+      } else {
+        delete playerCardRefs.current[player.player_id];
+      }
+    },
+    [player.player_id, playerCardRefs],
+  );
+  const handleFocus = useCallback(() => {
+    onFocusPlayer?.(player);
+  }, [onFocusPlayer, player]);
+  const handleKeyDown = useCallback(
+    (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        handleFocus();
+      }
+    },
+    [handleFocus],
+  );
 
   return (
     <article
-      ref={cardRef}
+      ref={handleCardRef}
       className={`board-card ${isYou ? "is-you" : ""} ${isFocused ? "is-focused" : ""} ${
         isTradeTarget ? "is-trade-target" : ""
       } ${isCurrentTurn ? "is-current-turn" : ""}`}
       style={playerCardStyle}
       role="button"
       tabIndex={0}
-      onClick={onFocus}
-      onKeyDown={(event) => {
-        if (event.key === "Enter" || event.key === " ") {
-          event.preventDefault();
-          onFocus();
-        }
-      }}
+      onClick={handleFocus}
+      onKeyDown={handleKeyDown}
     >
       <div className="board-card-topline">
         <div className="board-card-avatar" aria-hidden="true">
@@ -98,4 +124,4 @@ function BoardPlayerCard({
   );
 }
 
-export default BoardPlayerCard;
+export default memo(BoardPlayerCard);

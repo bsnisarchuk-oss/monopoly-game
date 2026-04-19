@@ -6,7 +6,8 @@ import BoardPlayersGrid from "./BoardPlayersGrid";
 import BoardTilesLayer from "./BoardTilesLayer";
 import DrawnCardCard from "./DrawnCardCard";
 import MortgageDeskCard from "./MortgageDeskCard";
-import PendingPurchaseCard from "./PendingPurchaseCard";
+import MovingTokensOverlay from "./MovingTokensOverlay";
+import PropertyPurchaseDecision from "./PropertyPurchaseDecision";
 import RecentEventsCard from "./RecentEventsCard";
 import SelectedCellInspector from "./SelectedCellInspector";
 import SelectedPlayerInspector from "./SelectedPlayerInspector";
@@ -17,12 +18,13 @@ function GameView({
   roomCode,
   turnNumber,
   playerId,
+  boardRef = null,
   boardCenterSummaryProps,
   selectedCellInspectorProps = null,
   selectedPlayerInspectorProps = null,
   bankruptcySummaryProps = null,
+  propertyPurchaseDecisionProps = null,
   boardCenterActionsProps = null,
-  pendingPurchaseCardProps = null,
   auctionCardProps = null,
   tradeDeskCardProps = null,
   mortgageDeskCardProps = null,
@@ -30,11 +32,12 @@ function GameView({
   recentEventsCardProps,
   drawnCard = null,
   boardTilesLayerProps,
+  movingTokensOverlayProps = null,
   boardPlayersGridProps,
 }) {
   const hasAuctionSpotlight = Boolean(auctionCardProps);
   const hasCenterSpotlightContent = Boolean(
-    auctionCardProps || boardCenterActionsProps || pendingPurchaseCardProps,
+    auctionCardProps || propertyPurchaseDecisionProps || boardCenterActionsProps,
   );
 
   return (
@@ -69,7 +72,7 @@ function GameView({
 
         <section className="game-main-stage">
           <section className="monopoly-board-shell">
-            <div className="monopoly-board">
+            <div ref={boardRef} className="monopoly-board">
               <section
                 className={`board-center${hasAuctionSpotlight ? " has-auction-spotlight" : ""}`}
               >
@@ -80,15 +83,16 @@ function GameView({
                     }`}
                   >
                     {auctionCardProps && <AuctionCard {...auctionCardProps} />}
-                    {boardCenterActionsProps && <BoardCenterActions {...boardCenterActionsProps} />}
-                    {pendingPurchaseCardProps && (
-                      <PendingPurchaseCard {...pendingPurchaseCardProps} />
+                    {propertyPurchaseDecisionProps && (
+                      <PropertyPurchaseDecision {...propertyPurchaseDecisionProps} />
                     )}
+                    {boardCenterActionsProps && <BoardCenterActions {...boardCenterActionsProps} />}
                   </div>
                 )}
               </section>
 
               <BoardTilesLayer {...boardTilesLayerProps} />
+              {movingTokensOverlayProps && <MovingTokensOverlay {...movingTokensOverlayProps} />}
             </div>
           </section>
 

@@ -1,20 +1,65 @@
+import { useLayoutEffect, useRef } from "react";
+
 function PlayerToken({
   player,
   occupantIndex,
   tokenColor,
-  movementOffset = null,
+  overlayPosition = null,
+  overlayScale = 1,
+  overlayAnimationId = null,
+  overlayAnimationKeyframes = null,
+  overlayAnimationDurationMs = 0,
+  isOverlay = false,
   isActiveTurn = false,
   isMoving = false,
 }) {
+  const tokenRef = useRef(null);
+  const shouldPulseActiveTurn = isActiveTurn && !isOverlay;
+
+  useLayoutEffect(() => {
+    const element = tokenRef.current;
+
+    if (
+      !element ||
+      !isOverlay ||
+      !overlayAnimationId ||
+      !Array.isArray(overlayAnimationKeyframes) ||
+      overlayAnimationKeyframes.length === 0 ||
+      overlayAnimationDurationMs <= 0 ||
+      typeof element.animate !== "function"
+    ) {
+      return undefined;
+    }
+
+    const animation = element.animate(overlayAnimationKeyframes, {
+      duration: overlayAnimationDurationMs,
+      easing: "linear",
+      fill: "both",
+    });
+
+    return () => {
+      animation.cancel();
+    };
+  }, [
+    isOverlay,
+    overlayAnimationDurationMs,
+    overlayAnimationId,
+    overlayAnimationKeyframes,
+  ]);
+
   return (
     <div
-      className={`player-token ${isActiveTurn ? "is-active-turn" : ""} ${isMoving ? "is-moving" : ""}`}
+      ref={tokenRef}
+      className={`player-token ${shouldPulseActiveTurn ? "is-active-turn" : ""} ${
+        isMoving ? "is-moving" : ""
+      } ${isOverlay ? "is-overlay" : ""}`}
       style={{
         "--player-token-color": tokenColor,
-        ...(movementOffset
+        ...(overlayPosition
           ? {
-              "--token-move-from-x": `${movementOffset.x}px`,
-              "--token-move-from-y": `${movementOffset.y}px`,
+              "--player-token-overlay-x": `${overlayPosition.x}px`,
+              "--player-token-overlay-y": `${overlayPosition.y}px`,
+              "--player-token-overlay-scale": overlayScale,
             }
           : {}),
         zIndex: (occupantIndex + 1) + (isMoving ? 20 : 0),

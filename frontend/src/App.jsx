@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   buildActionGuide,
   buildActionGuideJumpAnnouncement,
@@ -11,10 +11,7 @@ import { buildGameViewProps } from "./components/gameViewHelpers";
 import LandingPanel from "./components/LandingPanel";
 import LobbyView from "./components/LobbyView";
 import PlayerToken from "./components/PlayerToken";
-import {
-  getTokenMovementOffset,
-  splitJailOccupants,
-} from "./components/boardHelpers";
+import { splitJailOccupants } from "./components/boardHelpers";
 import {
   EMPTY_RECENT_EVENTS,
   filterRecentEventsByKind,
@@ -297,6 +294,7 @@ function App() {
   const highestSeenRecentEventIdRef = useRef(0);
   const recentEventHighlightTimeoutsRef = useRef({});
   const boardCellRefs = useRef({});
+  const boardRef = useRef(null);
   const playerCardRefs = useRef({});
   const actionSectionRefs = useRef({});
   const actionGuideLiveStatusRef = useRef(null);
@@ -315,7 +313,12 @@ function App() {
   const isGameOpen = currentRoom?.status === "in_game";
   const isFinished = currentRoom?.status === "finished";
   const boardCells = staticBoardCells;
+  const players = currentRoom?.players ?? [];
   const playerPositions = currentRoom?.game?.positions;
+  const currentRoomCash = currentRoom?.game?.cash ?? {};
+  const inJailByPlayer = currentRoom?.game?.in_jail ?? {};
+  const turnsInJailByPlayer = currentRoom?.game?.turns_in_jail ?? {};
+  const doublesStreakByPlayer = currentRoom?.game?.doubles_streak ?? {};
   const propertyOwners = currentRoom?.game?.property_owners ?? {};
   const propertyLevels = currentRoom?.game?.property_levels ?? {};
   const propertyMortgaged = currentRoom?.game?.property_mortgaged ?? {};
@@ -327,12 +330,166 @@ function App() {
   const recentEvents = currentRoom?.game?.recent_events ?? EMPTY_RECENT_EVENTS;
   const lastDrawnCard = currentRoom?.game?.last_drawn_card ?? null;
   const winnerId = currentRoom?.game?.winner_id ?? null;
-  const winnerPlayer =
-    currentRoom?.players.find((player) => player.player_id === winnerId) ?? null;
-  const currentPlayer =
-    currentRoom?.players.find((player) => player.player_id === playerId) ?? null;
+  const cellsByIndex = useMemo(() => {
+    const nextCellsByIndex = {};
+
+    for (const cell of boardCells) {
+      nextCellsByIndex[cell.index] = cell;
+    }
+
+    return nextCellsByIndex;
+  }, [boardCells]);
+  const playersById = useMemo(() => {
+    const nextPlayersById = {};
+
+    for (const player of players) {
+      nextPlayersById[player.player_id] = player;
+    }
+
+    return nextPlayersById;
+  }, [players]);
+  const playerColorById = useMemo(() => {
+    const nextPlayerColorById = {};
+
+    players.forEach((player, playerIndex) => {
+      nextPlayerColorById[player.player_id] =
+        PLAYER_TOKEN_COLORS[playerIndex % PLAYER_TOKEN_COLORS.length];
+    });
+
+    return nextPlayerColorById;
+  }, [players]);
+  const occupantsByCellIndex = useMemo(() => {
+    const nextOccupantsByCellIndex = {};
+
+    for (const player of players) {
+      const playerPosition = playerPositions?.[player.player_id];
+
+      if (!Number.isInteger(playerPosition)) {
+        continue;
+      }
+
+      if (!nextOccupantsByCellIndex[playerPosition]) {
+        nextOccupantsByCellIndex[playerPosition] = [];
+      }
+
+      nextOccupantsByCellIndex[playerPosition].push(player);
+    }
+
+    return nextOccupantsByCellIndex;
+  }, [playerPositions, players]);
+  const ownedCellsByPlayer = useMemo(() => {
+    const nextOwnedCellsByPlayer = {};
+
+    for (const cell of boardCells) {
+      const ownerId = propertyOwners[cell.index];
+
+      if (!ownerId) {
+        continue;
+      }
+
+      if (!nextOwnedCellsByPlayer[ownerId]) {
+        nextOwnedCellsByPlayer[ownerId] = [];
+      }
+
+      nextOwnedCellsByPlayer[ownerId].push(cell);
+    }
+
+    return nextOwnedCellsByPlayer;
+  }, [boardCells, propertyOwners]);
+  const mortgagedOwnedCellCountByPlayer = useMemo(() => {
+    const nextCounts = {};
+
+    for (const [positionValue, isMortgaged] of Object.entries(propertyMortgaged)) {
+      if (!isMortgaged) {
+        continue;
+      }
+
+      const ownerId = propertyOwners[Number(positionValue)];
+
+      if (!ownerId) {
+        continue;
+      }
+
+      nextCounts[ownerId] = (nextCounts[ownerId] ?? 0) + 1;
+    }
+
+    return nextCounts;
+  }, [propertyMortgaged, propertyOwners]);
+  const propertyCellsByColorGroup = useMemo(() => {
+    const nextPropertyCellsByColorGroup = {};
+
+    for (const cell of boardCells) {
+      if (cell.cell_type !== "property" || !cell.color_group) {
+        continue;
+      }
+
+      if (!nextPropertyCellsByColorGroup[cell.color_group]) {
+        nextPropertyCellsByColorGroup[cell.color_group] = [];
+      }
+
+      nextPropertyCellsByColorGroup[cell.color_group].push(cell);
+    }
+
+    return nextPropertyCellsByColorGroup;
+  }, [boardCells]);
+  const colorGroupsWithMortgage = useMemo(() => {
+    const nextColorGroupsWithMortgage = new Set();
+
+    for (const cell of boardCells) {
+      if (
+        cell.cell_type === "property" &&
+        cell.color_group &&
+        propertyMortgaged[cell.index]
+      ) {
+        nextColorGroupsWithMortgage.add(cell.color_group);
+      }
+    }
+
+    return nextColorGroupsWithMortgage;
+  }, [boardCells, propertyMortgaged]);
+  const colorGroupsWithUpgrade = useMemo(() => {
+    const nextColorGroupsWithUpgrade = new Set();
+
+    for (const cell of boardCells) {
+      if (
+        cell.cell_type === "property" &&
+        cell.color_group &&
+        (propertyLevels[cell.index] ?? 0) > 0
+      ) {
+        nextColorGroupsWithUpgrade.add(cell.color_group);
+      }
+    }
+
+    return nextColorGroupsWithUpgrade;
+  }, [boardCells, propertyLevels]);
+  const fullColorSetsByOwner = useMemo(() => {
+    const nextFullColorSetsByOwner = {};
+
+    for (const [colorGroup, groupCells] of Object.entries(propertyCellsByColorGroup)) {
+      const firstOwnerId = propertyOwners[groupCells[0]?.index];
+
+      if (!firstOwnerId) {
+        continue;
+      }
+
+      if (!groupCells.every((cell) => propertyOwners[cell.index] === firstOwnerId)) {
+        continue;
+      }
+
+      if (!nextFullColorSetsByOwner[firstOwnerId]) {
+        nextFullColorSetsByOwner[firstOwnerId] = new Set();
+      }
+
+      nextFullColorSetsByOwner[firstOwnerId].add(colorGroup);
+    }
+
+    return nextFullColorSetsByOwner;
+  }, [propertyCellsByColorGroup, propertyOwners]);
+  const winnerPlayer = winnerId ? playersById[winnerId] ?? null : null;
+  const currentPlayer = playerId ? playersById[playerId] ?? null : null;
 
   const {
+    movingPlayerIds,
     movingTokenEffects,
     movedCellIndexSet,
     renderedPlayerPositions,
@@ -352,35 +509,32 @@ function App() {
   const canStartGame =
     isHost &&
     isLobbyOpen &&
-    (currentRoom?.players?.length ?? 0) >= (currentRoom?.min_players_to_start ?? 0) &&
-    (currentRoom?.players?.every((player) => player.is_ready) ?? false);
+    players.length >= (currentRoom?.min_players_to_start ?? 0) &&
+    players.every((player) => player.is_ready);
   const currentTurnPlayerId = currentRoom?.game?.turn.current_player_id ?? null;
-  const currentTurnPlayer =
-    currentRoom?.players.find((player) => player.player_id === currentTurnPlayerId) ?? null;
+  const currentTurnPlayer = currentTurnPlayerId ? playersById[currentTurnPlayerId] ?? null : null;
   const canRollDice =
     isGameOpen &&
     currentTurnPlayerId === playerId &&
     (currentRoom?.game?.turn.can_roll ?? false) &&
+    !pendingPurchase &&
     !pendingTrade &&
     !pendingAuction &&
     !pendingBankruptcy;
   const canResolvePurchase =
     isGameOpen &&
     pendingPurchase?.player_id === playerId &&
-    Boolean(playerToken);
-  const isCurrentPlayerInJail =
-    currentRoom?.game?.in_jail?.[playerId] ?? false;
-  const currentPlayerDoublesStreak =
-    currentRoom?.game?.doubles_streak?.[playerId] ?? 0;
-  const currentPlayerTurnsInJail =
-    currentRoom?.game?.turns_in_jail?.[playerId] ?? 0;
+    currentPlayer != null;
+  const isCurrentPlayerInJail = inJailByPlayer[playerId] ?? false;
+  const currentPlayerDoublesStreak = doublesStreakByPlayer[playerId] ?? 0;
+  const currentPlayerTurnsInJail = turnsInJailByPlayer[playerId] ?? 0;
   const lastLandedPlayerId = currentRoom?.game?.last_landed_player_id ?? null;
   const lastLandedPosition = currentRoom?.game?.last_landed_position ?? null;
   const lastEffects = currentRoom?.game?.last_effects ?? [];
-  const lastLandedPlayer =
-    currentRoom?.players.find((player) => player.player_id === lastLandedPlayerId) ?? null;
-  const lastLandedCell = 
-    boardCells.find((cell) => cell.index === lastLandedPosition) ?? null;
+  const lastLandedPlayer = lastLandedPlayerId ? playersById[lastLandedPlayerId] ?? null : null;
+  const lastLandedCell = Number.isInteger(lastLandedPosition)
+    ? cellsByIndex[lastLandedPosition] ?? null
+    : null;
   const lastLandedCellLevel = lastLandedCell ? propertyLevels[lastLandedCell.index] ?? 0 : 0;
   const lastLandedCellMortgaged = lastLandedCell
     ? Boolean(propertyMortgaged[lastLandedCell.index])
@@ -390,94 +544,115 @@ function App() {
       ? getRentHint(lastLandedCell, lastLandedCellLevel)
       : null;
   const lastLandedCellOwner = lastLandedCell
-    ? getPlayerById(propertyOwners[lastLandedCell.index])
+    ? playersById[propertyOwners[lastLandedCell.index]] ?? null
     : null;
-  const pendingPurchaseCell =
-    boardCells.find((cell) => cell.index === pendingPurchase?.position) ?? null;
-  const pendingPurchasePlayer =
-    currentRoom?.players.find((player) => player.player_id === pendingPurchase?.player_id) ??
-    null;
-  const pendingTradeCell =
-    boardCells.find((cell) => cell.index === pendingTrade?.position) ?? null;
-  const pendingTradeProposer =
-    currentRoom?.players.find((player) => player.player_id === pendingTrade?.proposer_id) ??
-    null;
-  const pendingTradeReceiver =
-    currentRoom?.players.find((player) => player.player_id === pendingTrade?.receiver_id) ??
-    null;
-  const pendingAuctionCell =
-    boardCells.find((cell) => cell.index === pendingAuction?.position) ?? null;
-  const pendingAuctionInitiator =
-    currentRoom?.players.find((player) => player.player_id === pendingAuction?.initiator_player_id) ??
-    null;
-  const pendingAuctionActivePlayer =
-    currentRoom?.players.find((player) => player.player_id === pendingAuction?.active_player_id) ??
-    null;
+  const pendingPurchaseCell = Number.isInteger(pendingPurchase?.position)
+    ? cellsByIndex[pendingPurchase.position] ?? null
+    : null;
+  const pendingPurchasePlayer = pendingPurchase?.player_id
+    ? playersById[pendingPurchase.player_id] ?? null
+    : null;
+  const isPropertyPurchaseDecisionActive = canResolvePurchase && pendingPurchaseCell != null;
+  const pendingTradeCell = Number.isInteger(pendingTrade?.position)
+    ? cellsByIndex[pendingTrade.position] ?? null
+    : null;
+  const pendingTradeProposer = pendingTrade?.proposer_id
+    ? playersById[pendingTrade.proposer_id] ?? null
+    : null;
+  const pendingTradeReceiver = pendingTrade?.receiver_id
+    ? playersById[pendingTrade.receiver_id] ?? null
+    : null;
+  const pendingAuctionCell = Number.isInteger(pendingAuction?.position)
+    ? cellsByIndex[pendingAuction.position] ?? null
+    : null;
+  const pendingAuctionInitiator = pendingAuction?.initiator_player_id
+    ? playersById[pendingAuction.initiator_player_id] ?? null
+    : null;
+  const pendingAuctionActivePlayer = pendingAuction?.active_player_id
+    ? playersById[pendingAuction.active_player_id] ?? null
+    : null;
   const activeUiPlayerId =
     pendingAuction?.active_player_id ??
     pendingPurchase?.player_id ??
     pendingTrade?.receiver_id ??
     pendingBankruptcy?.player_id ??
     currentTurnPlayerId;
-  const activeUiPlayer =
-    currentRoom?.players.find((player) => player.player_id === activeUiPlayerId) ?? null;
+  const activeUiPlayer = activeUiPlayerId ? playersById[activeUiPlayerId] ?? null : null;
   const shouldShowCenterActionUi =
-    isGameOpen && activeUiPlayerId === playerId && Boolean(playerToken);
-  const pendingAuctionHighestBidder =
-    currentRoom?.players.find((player) => player.player_id === pendingAuction?.highest_bidder_id) ??
-    null;
-  const pendingAuctionPassedPlayers =
-    currentRoom?.players.filter((player) =>
-      pendingAuction?.passed_player_ids?.includes(player.player_id),
-    ) ?? [];
-  const pendingBankruptcyPlayer =
-    currentRoom?.players.find((player) => player.player_id === pendingBankruptcy?.player_id) ??
-    null;
+    isGameOpen && activeUiPlayerId === playerId && currentPlayer != null;
+  const pendingAuctionHighestBidder = pendingAuction?.highest_bidder_id
+    ? playersById[pendingAuction.highest_bidder_id] ?? null
+    : null;
+  const pendingAuctionPassedPlayerIdSet = useMemo(
+    () => new Set(pendingAuction?.passed_player_ids ?? []),
+    [pendingAuction?.passed_player_ids],
+  );
+  const pendingAuctionPassedPlayers = useMemo(
+    () => players.filter((player) => pendingAuctionPassedPlayerIdSet.has(player.player_id)),
+    [pendingAuctionPassedPlayerIdSet, players],
+  );
+  const pendingBankruptcyPlayer = pendingBankruptcy?.player_id
+    ? playersById[pendingBankruptcy.player_id] ?? null
+    : null;
   const pendingBankruptcyCreditor =
     pendingBankruptcy?.creditor_type === "player"
-      ? currentRoom?.players.find((player) => player.player_id === pendingBankruptcy?.creditor_player_id) ??
-        null
+      ? playersById[pendingBankruptcy?.creditor_player_id] ?? null
       : null;
   const pendingBankruptcyCreditorLabel =
     pendingBankruptcy?.creditor_type === "player"
       ? pendingBankruptcyCreditor?.nickname ?? "another player"
       : "the bank";
-  const priorRecentEvents = recentEvents.slice(1);
-  const gameRecentEventsKind = getRecentEventsSelectedKind("game");
-  const gameScopedRecentEvents = filterRecentEventsByKind(priorRecentEvents, gameRecentEventsKind);
+  const priorRecentEvents = useMemo(
+    () => (recentEvents.length > 1 ? recentEvents.slice(1) : EMPTY_RECENT_EVENTS),
+    [recentEvents],
+  );
+  const gameRecentEventsKind = recentEventsSelectedKinds.game ?? "all";
+  const gameScopedRecentEvents = useMemo(
+    () => filterRecentEventsByKind(priorRecentEvents, gameRecentEventsKind),
+    [gameRecentEventsKind, priorRecentEvents],
+  );
   const minimumAuctionBid = pendingAuction ? Math.max(1, pendingAuction.current_bid + 1) : 1;
-  const currentPlayerCash = currentRoom?.game?.cash?.[playerId] ?? 0;
+  const currentPlayerCash = currentRoomCash[playerId] ?? 0;
   const canAffordPendingPurchase = currentPlayerCash >= (pendingPurchase?.price ?? Infinity);
-  const focusedPlayerIdSet = new Set(focusedEventPlayerIds);
-  const cellRecentEventCounts = {};
-  const playerRecentEventCounts = {};
+  const focusedPlayerIdSet = useMemo(() => new Set(focusedEventPlayerIds), [focusedEventPlayerIds]);
+  const { cellRecentEventCounts, playerRecentEventCounts } = useMemo(() => {
+    const nextCellRecentEventCounts = {};
+    const nextPlayerRecentEventCounts = {};
 
-  for (const event of gameScopedRecentEvents) {
-    if (Number.isInteger(event.cell_index)) {
-      cellRecentEventCounts[event.cell_index] = (cellRecentEventCounts[event.cell_index] ?? 0) + 1;
+    for (const event of gameScopedRecentEvents) {
+      if (Number.isInteger(event.cell_index)) {
+        nextCellRecentEventCounts[event.cell_index] =
+          (nextCellRecentEventCounts[event.cell_index] ?? 0) + 1;
+      }
+
+      const relatedPlayerIds = [...new Set([event.player_id, event.target_player_id].filter(Boolean))];
+      for (const relatedPlayerId of relatedPlayerIds) {
+        nextPlayerRecentEventCounts[relatedPlayerId] =
+          (nextPlayerRecentEventCounts[relatedPlayerId] ?? 0) + 1;
+      }
     }
 
-    const relatedPlayerIds = [...new Set([event.player_id, event.target_player_id].filter(Boolean))];
-    for (const relatedPlayerId of relatedPlayerIds) {
-      playerRecentEventCounts[relatedPlayerId] = (playerRecentEventCounts[relatedPlayerId] ?? 0) + 1;
-    }
-  }
+    return {
+      cellRecentEventCounts: nextCellRecentEventCounts,
+      playerRecentEventCounts: nextPlayerRecentEventCounts,
+    };
+  }, [gameScopedRecentEvents]);
 
   const inspectedCell = Number.isInteger(focusedEventCellIndex)
-    ? boardCells.find((cell) => cell.index === focusedEventCellIndex) ?? null
+    ? cellsByIndex[focusedEventCellIndex] ?? null
     : null;
   const inspectedCellLevel = inspectedCell ? propertyLevels[inspectedCell.index] ?? 0 : 0;
   const inspectedCellMortgaged = inspectedCell
     ? Boolean(propertyMortgaged[inspectedCell.index])
     : false;
   const inspectedCellOwner = inspectedCell
-    ? getPlayerById(propertyOwners[inspectedCell.index])
+    ? playersById[propertyOwners[inspectedCell.index]] ?? null
     : null;
   const inspectedCellRentHint = inspectedCell
     ? getRentHint(inspectedCell, inspectedCellLevel)
     : null;
   const inspectedCellOccupants = inspectedCell
-    ? (currentRoom?.players ?? []).filter((player) => playerPositions?.[player.player_id] === inspectedCell.index)
+    ? occupantsByCellIndex[inspectedCell.index] ?? []
     : [];
   const inspectedCellLinkedEventCount = inspectedCell
     ? cellRecentEventCounts[inspectedCell.index] ?? 0
@@ -492,23 +667,31 @@ function App() {
       : focusedEventPlayerIds.length === 1
         ? focusedEventPlayerIds[0]
         : null;
-  const inspectedPlayer = inspectedPlayerId ? getPlayerById(inspectedPlayerId) : null;
-  const inspectedPlayerColor = inspectedPlayer ? getPlayerColor(inspectedPlayer.player_id) : null;
-  const inspectedPlayerPosition = inspectedPlayer ? getPlayerPosition(inspectedPlayer.player_id) : 0;
-  const inspectedPlayerCell = inspectedPlayer ? getPlayerCell(inspectedPlayer.player_id) : null;
-  const inspectedPlayerOwnedCells = inspectedPlayer ? getOwnedCellsByPlayer(inspectedPlayer.player_id) : [];
+  const inspectedPlayer = inspectedPlayerId ? playersById[inspectedPlayerId] ?? null : null;
+  const inspectedPlayerColor = inspectedPlayer
+    ? playerColorById[inspectedPlayer.player_id] ?? null
+    : null;
+  const inspectedPlayerPosition = inspectedPlayer
+    ? playerPositions?.[inspectedPlayer.player_id] ?? 0
+    : 0;
+  const inspectedPlayerCell = inspectedPlayer
+    ? cellsByIndex[inspectedPlayerPosition] ?? null
+    : null;
+  const inspectedPlayerOwnedCells = inspectedPlayer
+    ? ownedCellsByPlayer[inspectedPlayer.player_id] ?? []
+    : [];
   const inspectedPlayerOwnedCellsPreview = inspectedPlayerOwnedCells.slice(0, 3);
   const inspectedPlayerCash = inspectedPlayer
-    ? currentRoom?.game?.cash?.[inspectedPlayer.player_id] ?? 0
+    ? currentRoomCash[inspectedPlayer.player_id] ?? 0
     : 0;
   const inspectedPlayerMortgagedCellCount = inspectedPlayer
-    ? getMortgagedOwnedCellCount(inspectedPlayer.player_id)
+    ? mortgagedOwnedCellCountByPlayer[inspectedPlayer.player_id] ?? 0
     : 0;
   const inspectedPlayerInJail = inspectedPlayer
-    ? currentRoom?.game?.in_jail?.[inspectedPlayer.player_id] ?? false
+    ? inJailByPlayer[inspectedPlayer.player_id] ?? false
     : false;
   const inspectedPlayerTurnsInJail = inspectedPlayer
-    ? currentRoom?.game?.turns_in_jail?.[inspectedPlayer.player_id] ?? 0
+    ? turnsInJailByPlayer[inspectedPlayer.player_id] ?? 0
     : 0;
   const inspectedPlayerLinkedEventCount = inspectedPlayer
     ? playerRecentEventCounts[inspectedPlayer.player_id] ?? 0
@@ -584,19 +767,25 @@ function App() {
     }
 
     if (nextBoardCells) {
-      setStaticBoardCells(nextBoardCells);
+      startTransition(() => {
+        setStaticBoardCells(nextBoardCells);
+      });
     }
 
     currentRoomRef.current = sanitizedNextRoom;
     activeRoomCodeRef.current = sanitizedNextRoom.room_code ?? null;
-    setCurrentRoom(sanitizedNextRoom);
+    startTransition(() => {
+      setCurrentRoom(sanitizedNextRoom);
+    });
     return true;
   };
 
   clearCurrentRoomStateRef.current = () => {
     currentRoomRef.current = null;
     activeRoomCodeRef.current = null;
-    setCurrentRoom(null);
+    startTransition(() => {
+      setCurrentRoom(null);
+    });
   };
 
   function beginRoomActionRequest() {
@@ -651,7 +840,7 @@ function App() {
     });
   }
 
-  function clearRecentEventFocus() {
+  const clearRecentEventFocus = useCallback(() => {
     const hadFocusState =
       focusedRecentEventId != null ||
       focusedEventCellIndex != null ||
@@ -666,9 +855,14 @@ function App() {
     if (hadFocusState) {
       setRecentEventsClearFocusAnnouncementId((current) => current + 1);
     }
-  }
+  }, [
+    focusedEventCellIndex,
+    focusedEventPlayerIds.length,
+    focusedRecentEventId,
+    recentEventsEntityFilter,
+  ]);
 
-  function scrollToRecentEventTarget(event) {
+  const scrollToRecentEventTarget = useCallback((event) => {
     const hasCellTarget = Number.isInteger(event.cell_index);
     const primaryPlayerId = event.player_id ?? event.target_player_id ?? null;
     const targetElement =
@@ -680,9 +874,9 @@ function App() {
       block: "center",
       inline: "nearest",
     });
-  }
+  }, []);
 
-  function handleRecentEventFocus(event) {
+  const handleRecentEventFocus = useCallback((event) => {
     if (!hasRecentEventReferences(event)) {
       return;
     }
@@ -701,9 +895,9 @@ function App() {
     setFocusedEventCellIndex(hasCellRef ? event.cell_index : null);
     setFocusedEventPlayerIds(hasCellRef ? [] : playerIds);
     scrollToRecentEventTarget(event);
-  }
+  }, [clearRecentEventFocus, focusedRecentEventId, scrollToRecentEventTarget]);
 
-  function handleBoardCellFocus(cell) {
+  const handleBoardCellFocus = useCallback((cell) => {
     if (recentEventsEntityFilter?.type === "cell" && recentEventsEntityFilter.cellIndex === cell.index) {
       clearRecentEventFocus();
       return;
@@ -717,9 +911,9 @@ function App() {
       cellIndex: cell.index,
       label: cell.name,
     });
-  }
+  }, [clearRecentEventFocus, recentEventsEntityFilter]);
 
-  function handlePlayerCardFocus(player) {
+  const handlePlayerCardFocus = useCallback((player) => {
     if (
       recentEventsEntityFilter?.type === "player" &&
       recentEventsEntityFilter.playerIds.length === 1 &&
@@ -737,146 +931,112 @@ function App() {
       playerIds: [player.player_id],
       label: player.nickname,
     });
-  }
+  }, [clearRecentEventFocus, recentEventsEntityFilter]);
 
-  function getCellByPosition(position) {
-    return boardCells.find((cell) => cell.index === position) ?? null;
-  }
+  const getPlayerById = useCallback(
+    (targetPlayerId) => playersById[targetPlayerId] ?? null,
+    [playersById],
+  );
 
-  function getPlayerById(targetPlayerId) {
-    return currentRoom?.players.find((player) => player.player_id === targetPlayerId) ?? null;
-  }
+  const getPlayerPosition = useCallback(
+    (targetPlayerId) => playerPositions?.[targetPlayerId] ?? 0,
+    [playerPositions],
+  );
 
-  function getPlayerPosition(targetPlayerId) {
-    return playerPositions?.[targetPlayerId] ?? 0;
-  }
+  const getPlayerCell = useCallback(
+    (targetPlayerId) => {
+      const targetPosition = playerPositions?.[targetPlayerId];
 
-  function getPlayerCell(targetPlayerId) {
-    return getCellByPosition(getPlayerPosition(targetPlayerId));
-  }
+      return Number.isInteger(targetPosition) ? cellsByIndex[targetPosition] ?? null : null;
+    },
+    [cellsByIndex, playerPositions],
+  );
 
-  function getOwnedCellsByPlayer(targetPlayerId) {
-    if (!targetPlayerId) {
-      return [];
-    }
+  const getOwnedCellsByPlayer = useCallback(
+    (targetPlayerId) => {
+      if (!targetPlayerId) {
+        return [];
+      }
 
-    return boardCells.filter((cell) => propertyOwners[cell.index] === targetPlayerId);
-  }
+      return ownedCellsByPlayer[targetPlayerId] ?? [];
+    },
+    [ownedCellsByPlayer],
+  );
 
-  function getMortgagedOwnedCellCount(targetPlayerId) {
-    if (!targetPlayerId) {
-      return 0;
-    }
+  const getMortgagedOwnedCellCount = useCallback(
+    (targetPlayerId) => {
+      if (!targetPlayerId) {
+        return 0;
+      }
 
-    return Object.entries(propertyMortgaged).filter(
-      ([position, isMortgaged]) =>
-        isMortgaged && propertyOwners[Number(position)] === targetPlayerId,
-    ).length;
-  }
+      return mortgagedOwnedCellCountByPlayer[targetPlayerId] ?? 0;
+    },
+    [mortgagedOwnedCellCountByPlayer],
+  );
 
-  function getPlayerColor(targetPlayerId, fallbackIndex = 0) {
-    const colorIndex = currentRoom?.players.findIndex(
-      (candidate) => candidate.player_id === targetPlayerId,
-    );
-    const paletteIndex = colorIndex >= 0 ? colorIndex : fallbackIndex;
-    return PLAYER_TOKEN_COLORS[paletteIndex % PLAYER_TOKEN_COLORS.length];
-  }
+  const getPlayerColor = useCallback(
+    (targetPlayerId, fallbackIndex = 0) =>
+      playerColorById[targetPlayerId] ??
+      PLAYER_TOKEN_COLORS[fallbackIndex % PLAYER_TOKEN_COLORS.length],
+    [playerColorById],
+  );
 
-  function renderPlayerToken(player, occupantIndex) {
+  const renderPlayerToken = useCallback((player, occupantIndex) => {
     const tokenColor = getPlayerColor(player.player_id, occupantIndex);
-    const movementEffect = movingTokenEffects[player.player_id] ?? null;
-    const movementOffset = movementEffect
-      ? getTokenMovementOffset(movementEffect.fromPosition, movementEffect.toPosition)
-      : null;
 
     return (
       <PlayerToken
-        key={`${player.player_id}-${movementEffect?.animationId ?? "idle"}`}
+        key={player.player_id}
         player={player}
         occupantIndex={occupantIndex}
         tokenColor={tokenColor}
-        movementOffset={movementOffset}
         isActiveTurn={activeUiPlayerId === player.player_id}
-        isMoving={Boolean(movementEffect)}
       />
     );
-  }
+  }, [activeUiPlayerId, getPlayerColor]);
 
-  function ownsFullColorSet(ownerId, colorGroup) {
-    if (!ownerId || !colorGroup) {
-      return false;
-    }
+  const currentPlayerOwnedCells = useMemo(
+    () => (currentPlayer ? ownedCellsByPlayer[currentPlayer.player_id] ?? [] : []),
+    [currentPlayer, ownedCellsByPlayer],
+  );
+  const ownedBuyableCells = useMemo(
+    () => currentPlayerOwnedCells.filter((cell) => Boolean(cell.price)),
+    [currentPlayerOwnedCells],
+  );
+  const ownedStandardProperties = useMemo(
+    () => currentPlayerOwnedCells.filter((cell) => cell.cell_type === "property"),
+    [currentPlayerOwnedCells],
+  );
+  const upgradeableProperties = useMemo(
+    () =>
+      currentPlayerOwnedCells.filter((cell) => {
+        if (cell.cell_type !== "property" || !cell.color_group) {
+          return false;
+        }
 
-    const groupCells = boardCells.filter(
-      (cell) => cell.cell_type === "property" && cell.color_group === colorGroup,
-    );
+        if (!(fullColorSetsByOwner[currentPlayer?.player_id]?.has(cell.color_group) ?? false)) {
+          return false;
+        }
 
-    return groupCells.length > 0 &&
-      groupCells.every((cell) => propertyOwners[cell.index] === ownerId);
-  }
+        if (colorGroupsWithMortgage.has(cell.color_group)) {
+          return false;
+        }
 
-  function colorGroupHasMortgage(colorGroup) {
-    if (!colorGroup) {
-      return false;
-    }
-
-    return boardCells.some(
-      (cell) =>
-        cell.cell_type === "property" &&
-        cell.color_group === colorGroup &&
-        propertyMortgaged[cell.index],
-    );
-  }
-
-  function colorGroupHasUpgrade(colorGroup) {
-    if (!colorGroup) {
-      return false;
-    }
-
-    return boardCells.some(
-      (cell) =>
-        cell.cell_type === "property" &&
-        cell.color_group === colorGroup &&
-        (propertyLevels[cell.index] ?? 0) > 0,
-    );
-  }
-
-  const upgradeableProperties =
-    currentPlayer == null
-      ? []
-      : boardCells.filter((cell) => {
-          if (cell.cell_type !== "property" || !cell.color_group) {
-            return false;
-          }
-
-          if (propertyOwners[cell.index] !== currentPlayer.player_id) {
-            return false;
-          }
-
-          if (!ownsFullColorSet(currentPlayer.player_id, cell.color_group)) {
-            return false;
-          }
-
-          if (colorGroupHasMortgage(cell.color_group)) {
-            return false;
-          }
-
-          return (propertyLevels[cell.index] ?? 0) < MAX_PROPERTY_LEVEL;
-        });
-  const sellableProperties =
-    currentPlayer == null
-      ? []
-      : boardCells.filter((cell) => {
-          if (cell.cell_type !== "property") {
-            return false;
-          }
-
-          if (propertyOwners[cell.index] !== currentPlayer.player_id) {
-            return false;
-          }
-
-          return (propertyLevels[cell.index] ?? 0) > 0;
-        });
+        return (propertyLevels[cell.index] ?? 0) < MAX_PROPERTY_LEVEL;
+      }),
+    [
+      colorGroupsWithMortgage,
+      currentPlayer?.player_id,
+      currentPlayerOwnedCells,
+      fullColorSetsByOwner,
+      propertyLevels,
+    ],
+  );
+  const sellableProperties = useMemo(
+    () =>
+      ownedStandardProperties.filter((cell) => (propertyLevels[cell.index] ?? 0) > 0),
+    [ownedStandardProperties, propertyLevels],
+  );
 
   const canUsePreRollDesk =
     isGameOpen &&
@@ -886,97 +1046,69 @@ function App() {
     !pendingTrade &&
     !pendingAuction &&
     !pendingBankruptcy &&
-    Boolean(playerToken);
+    currentPlayer != null;
   const canUpgradeProperties = canUsePreRollDesk;
   const canManageDebtRecovery =
     isGameOpen &&
     pendingBankruptcy?.player_id === playerId &&
-    Boolean(playerToken);
+    currentPlayer != null;
   const canManageMortgages = canUsePreRollDesk || canManageDebtRecovery;
   const canSellUpgrades = canUsePreRollDesk || canManageDebtRecovery;
   const canUnmortgageProperties = canUsePreRollDesk;
-  const mortgageableCells =
-    currentPlayer == null
-      ? []
-      : boardCells.filter((cell) => {
-          if (!cell.price) {
-            return false;
-          }
+  const mortgageableCells = useMemo(
+    () =>
+      ownedBuyableCells.filter((cell) => {
+        if (propertyMortgaged[cell.index]) {
+          return false;
+        }
 
-          if (propertyOwners[cell.index] !== currentPlayer.player_id) {
-            return false;
-          }
+        if (cell.cell_type === "property" && colorGroupsWithUpgrade.has(cell.color_group)) {
+          return false;
+        }
 
-          if (propertyMortgaged[cell.index]) {
-            return false;
-          }
+        return true;
+      }),
+    [colorGroupsWithUpgrade, ownedBuyableCells, propertyMortgaged],
+  );
+  const unmortgageableCells = useMemo(
+    () => ownedBuyableCells.filter((cell) => propertyMortgaged[cell.index]),
+    [ownedBuyableCells, propertyMortgaged],
+  );
+  const tradeTargets = useMemo(
+    () =>
+      currentPlayer == null
+        ? []
+        : players.filter((player) => player.player_id !== currentPlayer.player_id),
+    [currentPlayer, players],
+  );
+  const tradeableCells = useMemo(
+    () =>
+      ownedBuyableCells.filter((cell) => {
+        if (propertyMortgaged[cell.index]) {
+          return false;
+        }
 
-          if (cell.cell_type === "property" && colorGroupHasUpgrade(cell.color_group)) {
-            return false;
-          }
+        if (cell.cell_type === "property" && colorGroupsWithUpgrade.has(cell.color_group)) {
+          return false;
+        }
 
-          return true;
-        });
-  const unmortgageableCells =
-    currentPlayer == null
-      ? []
-      : boardCells.filter(
-          (cell) =>
-            cell.price &&
-            propertyOwners[cell.index] === currentPlayer.player_id &&
-            propertyMortgaged[cell.index],
-        );
-  const tradeTargets =
-    currentPlayer == null
-      ? []
-      : currentRoom.players.filter((player) => player.player_id !== currentPlayer.player_id);
-  const tradeableCells =
-    currentPlayer == null
-      ? []
-      : boardCells.filter((cell) => {
-          if (!cell.price) {
-            return false;
-          }
-
-          if (propertyOwners[cell.index] !== currentPlayer.player_id) {
-            return false;
-          }
-
-          if (propertyMortgaged[cell.index]) {
-            return false;
-          }
-
-          if (cell.cell_type === "property" && colorGroupHasUpgrade(cell.color_group)) {
-            return false;
-          }
-
-          return true;
-        });
-  const ownedBuyableCells =
-    currentPlayer == null
-      ? []
-      : boardCells.filter(
-          (cell) => cell.price && propertyOwners[cell.index] === currentPlayer.player_id,
-        );
-  const ownedStandardProperties =
-    currentPlayer == null
-      ? []
-      : boardCells.filter(
-          (cell) => cell.cell_type === "property" && propertyOwners[cell.index] === currentPlayer.player_id,
-        );
+        return true;
+      }),
+    [colorGroupsWithUpgrade, ownedBuyableCells, propertyMortgaged],
+  );
   const canProposeTrade = canUsePreRollDesk || canManageDebtRecovery;
   const canAcceptTrade =
     isGameOpen &&
     pendingTrade?.receiver_id === playerId &&
-    Boolean(playerToken);
+    currentPlayer != null;
   const canRejectTrade =
     isGameOpen &&
     (pendingTrade?.receiver_id === playerId || pendingTrade?.proposer_id === playerId) &&
-    Boolean(playerToken);
+    currentPlayer != null;
   const canBidInAuction =
     isGameOpen &&
     pendingAuction?.active_player_id === playerId &&
-    Boolean(playerToken);
+    currentPlayer != null;
   const canPassAuction = canBidInAuction;
   const canAffordAuctionBid = currentPlayerCash >= minimumAuctionBid;
   const canPayJailFine = canUsePreRollDesk && isCurrentPlayerInJail;
@@ -986,8 +1118,6 @@ function App() {
   const inspectedCellOwnedByYou = inspectedCellOwner?.player_id === playerId;
   const inspectedCellIsPendingPurchase =
     inspectedCellPosition != null && pendingPurchaseCell?.index === inspectedCellPosition;
-  const inspectedCellCanBuy = inspectedCellIsPendingPurchase && canResolvePurchase;
-  const inspectedCellCanSkipPurchase = inspectedCellIsPendingPurchase && canResolvePurchase;
   const inspectedCellCanUpgrade =
     inspectedCellPosition != null &&
     canUpgradeProperties &&
@@ -1012,8 +1142,6 @@ function App() {
   const inspectedCellIsSelectedInTradeDesk =
     inspectedCellCanUseTradeDesk && selectedTradePosition === String(inspectedCellPosition);
   const inspectedCellHasQuickActions =
-    inspectedCellCanBuy ||
-    inspectedCellCanSkipPurchase ||
     inspectedCellCanUpgrade ||
     inspectedCellCanSellUpgrade ||
     inspectedCellCanMortgage ||
@@ -1021,16 +1149,18 @@ function App() {
     inspectedCellCanUseTradeDesk;
   let inspectedCellQuickActionMessage = null;
 
-  if (inspectedCellIsPendingPurchase && canResolvePurchase && !canAffordPendingPurchase) {
+  if (inspectedCellIsPendingPurchase && canResolvePurchase) {
     inspectedCellQuickActionMessage =
-      "You do not have enough cash to buy this cell right now. Pass on purchase to continue.";
+      canAffordPendingPurchase
+        ? "Use the purchase panel in the center of the board to buy this cell or send it straight to auction."
+        : "Use the purchase panel in the center of the board to send this cell straight to auction. The buy option stays disabled until you have enough cash.";
   } else if (inspectedCellIsPendingPurchase && !canResolvePurchase) {
     inspectedCellQuickActionMessage = `${
       pendingPurchasePlayer?.nickname ?? "The active player"
     } is deciding whether to buy this.`;
   } else if (inspectedCell?.price && !inspectedCellOwner) {
     inspectedCellQuickActionMessage =
-      "This cell is unowned. Buy or pass will appear here when you land on it.";
+      "This cell is unowned. The purchase panel opens in the board center when you land on it.";
   } else if (inspectedCellOwnedByYou && inspectedCell.price && !inspectedCellHasQuickActions) {
     if (pendingTrade) {
       inspectedCellQuickActionMessage = "Quick actions are paused while a trade offer is waiting for a response.";
@@ -1114,7 +1244,7 @@ function App() {
     queueActionGuideAnnouncement("UI preferences restored to default.");
   }
 
-  const showTradeDesk = !pendingAuction && (pendingTrade || ownedBuyableCells.length > 0);
+  const showTradeDesk = !pendingPurchase && !pendingAuction && (pendingTrade || ownedBuyableCells.length > 0);
   const canShowTradeForm =
     !pendingTrade && canProposeTrade && tradeableCells.length > 0 && tradeTargets.length > 0;
   const tradeDeskState = pendingTrade
@@ -1153,7 +1283,7 @@ function App() {
               note: "No cells to trade. Mortgaged or upgraded color groups are excluded.",
             };
 
-  const showMortgageDesk = !pendingAuction && ownedBuyableCells.length > 0;
+  const showMortgageDesk = !pendingPurchase && !pendingAuction && ownedBuyableCells.length > 0;
   const showMortgageLists =
     mortgageableCells.length > 0 || (unmortgageableCells.length > 0 && !canManageDebtRecovery);
   const mortgageDeskState =
@@ -1192,7 +1322,7 @@ function App() {
                 note: getDeskLockReason("Mortgage desk"),
               };
 
-  const showUpgradeDesk = !pendingAuction && ownedStandardProperties.length > 0;
+  const showUpgradeDesk = !pendingPurchase && !pendingAuction && ownedStandardProperties.length > 0;
   const showUpgradeLists =
     (!canManageDebtRecovery && upgradeableProperties.length > 0) || sellableProperties.length > 0;
   const upgradeDeskState =
@@ -1381,16 +1511,10 @@ function App() {
   });
 
   useEffect(() => {
-    const nextTradeTargets =
-      currentPlayer == null
-        ? []
-        : currentRoom?.players.filter((player) => player.player_id !== currentPlayer.player_id) ??
-          [];
-
-    if (!nextTradeTargets.some((player) => player.player_id === selectedTradeTargetId)) {
-      setSelectedTradeTargetId(nextTradeTargets[0]?.player_id ?? "");
+    if (!tradeTargets.some((player) => player.player_id === selectedTradeTargetId)) {
+      setSelectedTradeTargetId(tradeTargets[0]?.player_id ?? "");
     }
-  }, [selectedTradeTargetId, currentPlayer, currentRoom]);
+  }, [selectedTradeTargetId, tradeTargets]);
 
   useEffect(() => {
     return () => {
@@ -1406,51 +1530,10 @@ function App() {
   }, []);
 
   useEffect(() => {
-    const nextBoardCells = boardCells;
-    const nextPropertyOwners = currentRoom?.game?.property_owners ?? {};
-    const nextPropertyLevels = currentRoom?.game?.property_levels ?? {};
-    const nextPropertyMortgaged = currentRoom?.game?.property_mortgaged ?? {};
-
-    const localColorGroupHasUpgrade = (colorGroup) => {
-      if (!colorGroup) {
-        return false;
-      }
-
-      return nextBoardCells.some(
-        (cell) =>
-          cell.cell_type === "property" &&
-          cell.color_group === colorGroup &&
-          (nextPropertyLevels[cell.index] ?? 0) > 0,
-      );
-    };
-
-    const nextTradeableCells =
-      currentPlayer == null
-        ? []
-        : nextBoardCells.filter((cell) => {
-            if (!cell.price) {
-              return false;
-            }
-
-            if (nextPropertyOwners[cell.index] !== currentPlayer.player_id) {
-              return false;
-            }
-
-            if (nextPropertyMortgaged[cell.index]) {
-              return false;
-            }
-
-            if (cell.cell_type === "property" && localColorGroupHasUpgrade(cell.color_group)) {
-              return false;
-            }
-
-            return true;
-          });
-
-    if (!nextTradeableCells.some((cell) => String(cell.index) === selectedTradePosition)) {
-      setSelectedTradePosition(nextTradeableCells[0] ? String(nextTradeableCells[0].index) : "");
+    if (!tradeableCells.some((cell) => String(cell.index) === selectedTradePosition)) {
+      setSelectedTradePosition(tradeableCells[0] ? String(tradeableCells[0].index) : "");
     }
-  }, [selectedTradePosition, currentPlayer, currentRoom, boardCells]);
+  }, [selectedTradePosition, tradeableCells]);
 
   useEffect(() => {
     if (!pendingAuction) {
@@ -1496,7 +1579,9 @@ function App() {
           return;
         }
 
-        setStaticBoardCells(data.board);
+        startTransition(() => {
+          setStaticBoardCells(data.board);
+        });
       })
       .catch(() => {});
 
@@ -2195,6 +2280,61 @@ function App() {
     }
   }
 
+  async function handleAuctionProperty() {
+    if (!currentRoom || !playerToken || !pendingPurchaseCell) {
+      setStatus("There is no property waiting for your decision.");
+      return;
+    }
+
+    setIsSubmitting(true);
+    beginRoomActionRequest();
+    setStatus(`Sending ${pendingPurchaseCell.name} to auction...`);
+
+    try {
+      const response = await fetch(
+        `${API_BASE_URL}/rooms/${currentRoom.room_code}/auction/start`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            player_token: playerToken,
+          }),
+        },
+      );
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.detail || "Starting auction failed.");
+      }
+
+      setPlayerId(data.player_id);
+      setPlayerToken(data.player_token);
+      applyIncomingRoomStateRef.current(data.room, {
+        allowRoomActivation: true,
+      });
+      saveStoredSession({
+        player_id: data.player_id,
+        player_token: data.player_token,
+        room_code: data.room.room_code,
+        nickname: currentPlayer?.nickname ?? nickname.trim(),
+      });
+      const effects = data.room.game?.last_effects ?? [];
+      setStatus(
+        effects.length > 0
+          ? effects.join(" ")
+          : `Sent ${pendingPurchaseCell.name} to auction.`,
+      );
+    } catch (error) {
+      setStatus(error.message);
+    } finally {
+      endRoomActionRequest();
+      setIsSubmitting(false);
+    }
+  }
+
   async function handleSkipPurchase() {
     if (!currentRoom || !playerToken || !pendingPurchaseCell) {
       setStatus("There is no property waiting for your decision.");
@@ -2801,9 +2941,6 @@ function App() {
             inspectedCellLinkedEventCount,
             inspectedCellJailGroups,
             inspectedCellQuickActionMessage,
-            inspectedCellCanBuy,
-            inspectedCellCanSkipPurchase,
-            canAffordPendingPurchase,
             inspectedCellCanUpgrade,
             inspectedCellCanSellUpgrade,
             inspectedCellCanMortgage,
@@ -2924,6 +3061,8 @@ function App() {
             getPlayerById,
             playerRecentEventCounts,
             currentTurnPlayerId: activeUiPlayerId,
+            movingPlayerIds,
+            movingTokenEffects,
             focusedPlayerIdSet,
             getPlayerPosition,
             getPlayerCell,
@@ -2957,6 +3096,7 @@ function App() {
             handleDeclareBankruptcy,
             handleRollDice,
             handleLeaveRoom,
+            handleAuctionProperty,
             handleBidInAuction,
             handlePassAuction,
             handleRespondTrade,
@@ -2978,6 +3118,7 @@ function App() {
             toggleDeskCollapsed,
           },
           refs: {
+            boardRef,
             setActionSectionRef,
             boardCellRefs,
             playerCardRefs,
@@ -2988,7 +3129,7 @@ function App() {
             jailPosition: JAIL_POSITION,
           },
           uiVisibilityState: {
-            shouldShowCenterActionUi,
+            shouldShowCenterActionUi: shouldShowCenterActionUi || isPropertyPurchaseDecisionActive,
           },
         })
       : null;

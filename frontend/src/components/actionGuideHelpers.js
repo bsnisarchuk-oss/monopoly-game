@@ -9,7 +9,7 @@ function getActionSectionLabel(sectionKey) {
     case "actions":
       return "Turn actions";
     case "purchase":
-      return "Buy or pass";
+      return "Property decision";
     case "auction":
       return "Auction";
     case "trade":
@@ -33,6 +33,8 @@ function getActionFocusAnnouncementLabel(focusKey) {
       return "Roll dice";
     case "buy-property":
       return "Buy property";
+    case "auction-property":
+      return "Auction";
     case "skip-purchase":
       return "Pass on purchase";
     case "auction-bid-input":
@@ -265,28 +267,28 @@ export function buildActionGuide({
       return {
         tone: "urgent",
         eyebrow: "Decision needed",
-        title: "Pass required",
+        title: "Auction required",
         summary: `You do not have enough cash to buy ${pendingPurchaseCell.name} for $${pendingPurchase?.price ?? 0} right now.`,
         steps: [
-          "Use Pass on purchase to continue.",
-          "Mortgage and upgrade actions unlock again after the purchase is resolved.",
+          "Use Auction to send the property straight to bidding.",
+          "Other turn actions unlock again after the property decision is resolved.",
         ],
-        focusKey: "skip-purchase",
-        targetKey: "actions",
+        focusKey: "auction-property",
+        targetKey: "purchase",
       };
     }
 
     return {
       tone: "urgent",
       eyebrow: "Decision needed",
-      title: "Buy or pass",
-      summary: `You landed on ${pendingPurchaseCell.name}. Buy it for $${pendingPurchase?.price ?? 0} or pass it to the next ownership step.`,
+      title: "Buy or auction",
+      summary: `You landed on ${pendingPurchaseCell.name}. Buy it for $${pendingPurchase?.price ?? 0} or send it straight to auction.`,
       steps: [
-        "Use Buy property if you want to keep this cell.",
-        "Use Pass on purchase if you do not want to buy it.",
+        `Use Buy for $${pendingPurchase?.price ?? 0} if you want to keep this cell.`,
+        "Use Auction if you want bidding to begin immediately.",
       ],
       focusKey: "buy-property",
-      targetKey: "actions",
+      targetKey: "purchase",
     };
   }
 
@@ -295,7 +297,7 @@ export function buildActionGuide({
       tone: "waiting",
       eyebrow: "Turn paused",
       title: `Waiting for ${pendingPurchasePlayer?.nickname ?? activePlayerName}`,
-      summary: `${pendingPurchasePlayer?.nickname ?? activePlayerName} is deciding whether to buy ${pendingPurchaseCell.name}.`,
+      summary: `${pendingPurchasePlayer?.nickname ?? activePlayerName} is deciding whether to buy ${pendingPurchaseCell.name} or send it to auction.`,
       steps: [
         "The turn continues after the purchase is resolved.",
         "You can inspect the board, players, and recent events while you wait.",
