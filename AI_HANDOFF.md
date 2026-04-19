@@ -8,7 +8,7 @@
 
 ## STATUS
 
-`2026-04-19` — lint полностью зелёный (**0 errors, 0 warnings**). После `70e10d3` (registrar callbacks) ещё одна правка: стабилизировали fallback-референсы в `App.jsx` через модульные `EMPTY_PLAYERS`/`EMPTY_RECORD` константы — ушли все 16 `exhaustive-deps` warning'ов. Готово к коммиту и пушу.
+`2026-04-19` — lint полностью зелёный (**0 errors, 0 warnings**), build зелёный (209ms). 5 коммитов залиты на `origin/master`: `08ad32d` setup, `0d792a0` 2-player fallback, `291c84d` board redesign, `70e10d3` registrar callbacks, `ef6f80b` stabilize fallback refs. Проект в рабочем состоянии, задач в очереди нет.
 
 ---
 
@@ -29,10 +29,7 @@
 
 ## NEXT
 
-1. Закоммитить fix `App.jsx` + `AI_HANDOFF.md`.
-   коммит: `Stabilize fallback refs to silence exhaustive-deps warnings`
-   проверки до коммита: `npm.cmd run lint` (ожидается 0 problems), `npm.cmd run build` (ожидается без регрессий), быстрый визуальный smoke — лобби/игра открываются, покупка/рента работают.
-2. `git push origin master`.
+— пусто —
 
 ---
 
@@ -49,10 +46,10 @@
 Последние проверенные изменения с результатами `lint/build/test/smoke`.
 При новой верификации — добавляй сверху, старые записи сдвигай вниз.
 
-- `2026-04-19` — стабилизированные fallback-референсы (`App.jsx`):
+- `2026-04-19` — стабилизированные fallback-референсы (`ef6f80b`):
   - `EMPTY_PLAYERS = Object.freeze([])` и `EMPTY_RECORD = Object.freeze({})` как модульные константы; 4 fallback'а заменены (`players`, `propertyOwners`, `propertyLevels`, `propertyMortgaged`).
-  - `npx eslint .` ✅ — **0 errors, 0 warnings** (было 16 warnings).
-  - `npm.cmd run build` — ещё не прогоняли на Windows, ожидается без регрессий.
+  - `npm.cmd run lint` ✅ — **0 errors, 0 warnings** (было 16 warnings).
+  - `npm.cmd run build` ✅ — 209ms, без регрессий по размеру bundle.
   - Риск: `Object.freeze` запрещает мутации; grep подтвердил, что в коде нет `.push/.sort/.splice` по этим переменным.
 - `2026-04-19` — lint-фикс запушен на `origin/master` (`70e10d3`):
   - `npm.cmd run lint` ✅ — 0 errors, 16 warnings (старые `exhaustive-deps`).
