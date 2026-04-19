@@ -63,7 +63,7 @@ function BoardCellTile({
   visitingPlayers = [],
   jailPlayers = [],
   occupants = [],
-  boardCellRefs,
+  registerBoardCellRef,
   onFocusCell,
   renderPlayerToken,
 }) {
@@ -86,17 +86,9 @@ function BoardCellTile({
   );
   const handleTileRef = useCallback(
     (element) => {
-      if (!boardCellRefs?.current) {
-        return;
-      }
-
-      if (element) {
-        boardCellRefs.current[cell.index] = element;
-      } else {
-        delete boardCellRefs.current[cell.index];
-      }
+      registerBoardCellRef?.(cell.index, element);
     },
-    [boardCellRefs, cell.index],
+    [cell.index, registerBoardCellRef],
   );
   const handleFocus = useCallback(() => {
     onFocusCell?.(cell);

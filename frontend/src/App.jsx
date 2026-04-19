@@ -862,6 +862,22 @@ function App() {
     recentEventsEntityFilter,
   ]);
 
+  const registerBoardCellRef = useCallback((cellIndex, element) => {
+    if (element) {
+      boardCellRefs.current[cellIndex] = element;
+    } else {
+      delete boardCellRefs.current[cellIndex];
+    }
+  }, []);
+
+  const registerPlayerCardRef = useCallback((playerId, element) => {
+    if (element) {
+      playerCardRefs.current[playerId] = element;
+    } else {
+      delete playerCardRefs.current[playerId];
+    }
+  }, []);
+
   const scrollToRecentEventTarget = useCallback((event) => {
     const hasCellTarget = Number.isInteger(event.cell_index);
     const primaryPlayerId = event.player_id ?? event.target_player_id ?? null;
@@ -3122,6 +3138,8 @@ function App() {
             setActionSectionRef,
             boardCellRefs,
             playerCardRefs,
+            registerBoardCellRef,
+            registerPlayerCardRef,
           },
           constants: {
             maxPropertyLevel: MAX_PROPERTY_LEVEL,

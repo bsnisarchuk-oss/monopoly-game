@@ -20,7 +20,7 @@ function BoardTilesLayer({
   movedCellIndexSet,
   currentPlayerId = null,
   getPlayerColor,
-  boardCellRefs,
+  registerBoardCellRef,
   onFocusCell,
   renderPlayerToken,
 }) {
@@ -97,7 +97,7 @@ function BoardTilesLayer({
         visitingPlayers={visitingPlayers}
         jailPlayers={jailPlayers}
         occupants={occupants}
-        boardCellRefs={boardCellRefs}
+        registerBoardCellRef={registerBoardCellRef}
         onFocusCell={onFocusCell}
         renderPlayerToken={renderPlayerToken}
       />

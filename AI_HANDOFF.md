@@ -8,9 +8,7 @@
 
 ## STATUS
 
-`<дата ISO>` — одна строка о текущем состоянии проекта.
-
-Пример: `2026-04-19 — auction flow стабилен, дальше работаем над trade UI.`
+`2026-04-19` — worktree разгребён в 3 коммита (Claude Code setup + backend 2-player fallback + frontend redesign), local master на 4 коммита впереди `origin/master` (не запушено). 3 eslint-ошибки от `react-hooks@7.0.1` починены через рефакторинг callback-registrar pattern для `boardCellRefs`/`playerCardRefs` (пропы больше не мутируются) + targeted `eslint-disable` для DOM-measurement в `MovingTokensOverlay`. Следующий коммит + push.
 
 ---
 
@@ -31,17 +29,15 @@
 
 ## NEXT
 
-Одна-две конкретных задачи для следующего агента. Максимально конкретно.
+1. Закоммитить lint-фикс.
+   файлы: `frontend/src/App.jsx`, `frontend/src/components/gameViewHelpers.js`, `frontend/src/components/BoardTilesLayer.jsx`, `frontend/src/components/BoardPlayersGrid.jsx`, `frontend/src/components/BoardCellTile.jsx`, `frontend/src/components/BoardPlayerCard.jsx`, `frontend/src/components/MovingTokensOverlay.jsx`
+   коммит: `Fix react-hooks/immutability via registrar callbacks`
+   тело: refactor — parent owns refs, children call `registerBoardCellRef(index, el)` / `registerPlayerCardRef(id, el)` instead of mutating the prop; for `MovingTokensOverlay` DOM-measurement add a scoped `eslint-disable-next-line react-hooks/set-state-in-effect` (idiomatic `useLayoutEffect`+`setState` pattern, guarded by signature).
+   проверки до коммита: `npm.cmd run lint` ✅ зелёный; запустить `npm.cmd run build` на Windows; визуально проверить движение фишек и `scrollToRecentEventTarget` (клик по недавнему событию должен скроллить к клетке/игроку).
 
-Формат:
-```
-1. <задача>
-   файлы: ...
-   ожидаемое поведение: ...
-   проверки: npm.cmd run lint / unittest / curl ...
-```
-
-— пусто —
+2. Запушить свежие коммиты на origin.
+   команда: `git push origin master`
+   условие: после коммита с lint-фиксом и зелёного билда.
 
 ---
 
@@ -58,6 +54,15 @@
 Последние проверенные изменения с результатами `lint/build/test/smoke`.
 При новой верификации — добавляй сверху, старые записи сдвигай вниз.
 
+- `2026-04-19` — lint-фикс (registrar-callback refactor + scoped disable в `MovingTokensOverlay`):
+  - `npm.cmd run lint` ✅ — 0 errors, 16 warnings (старые `exhaustive-deps` по `App.jsx`, не трогали).
+  - `npm.cmd run build` и `python -m unittest discover tests` — не прогоняли в sandbox (Linux-mount даёт ложные ошибки: rolldown native binding и NUL-bytes в `.py`); проверить на Windows до коммита.
+  - Изменённые файлы: `App.jsx`, `gameViewHelpers.js`, `BoardTilesLayer.jsx`, `BoardPlayersGrid.jsx`, `BoardCellTile.jsx`, `BoardPlayerCard.jsx`, `MovingTokensOverlay.jsx`.
+- `2026-04-19` — после трёх коммитов (`08ad32d` setup, `0d792a0` backend, `291c84d` frontend):
+  - `npm.cmd run build` ✅ — vite 47 модулей, 277ms.
+  - `..\.venv\Scripts\python.exe -m unittest discover tests` ✅ — 67 тестов.
+  - `ruff check .` (backend) ✅ — 0 ошибок.
+  - `npm.cmd run lint` ❌ — 3 ошибки (см. NEXT); 16 warnings.
 - `2026-04-12` — frontend `npm.cmd run lint` ✅, `npm.cmd run build` ✅;
   backend `python -m unittest tests.test_auction_flow tests.test_property_rules` ✅;
   `py_compile room_store.py` ✅.

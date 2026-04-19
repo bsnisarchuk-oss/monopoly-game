@@ -20,7 +20,7 @@ function BoardPlayerCard({
   playerColor = null,
   statusLabel,
   onFocusPlayer,
-  playerCardRefs,
+  registerPlayerCardRef,
 }) {
   const statusToneClass = isCurrentTurn
     ? "is-active"
@@ -40,17 +40,9 @@ function BoardPlayerCard({
   );
   const handleCardRef = useCallback(
     (element) => {
-      if (!playerCardRefs?.current) {
-        return;
-      }
-
-      if (element) {
-        playerCardRefs.current[player.player_id] = element;
-      } else {
-        delete playerCardRefs.current[player.player_id];
-      }
+      registerPlayerCardRef?.(player.player_id, element);
     },
-    [player.player_id, playerCardRefs],
+    [player.player_id, registerPlayerCardRef],
   );
   const handleFocus = useCallback(() => {
     onFocusPlayer?.(player);

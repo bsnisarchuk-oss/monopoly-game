@@ -19,7 +19,7 @@ function BoardPlayersGrid({
   getOwnedCellsByPlayer,
   getMortgagedOwnedCellCount,
   onFocusPlayer,
-  playerCardRefs,
+  registerPlayerCardRef,
 }) {
   return (
     <section className="board-grid">
@@ -61,7 +61,7 @@ function BoardPlayersGrid({
             playerColor={playerColor}
             statusLabel={statusLabel}
             onFocusPlayer={onFocusPlayer}
-            playerCardRefs={playerCardRefs}
+            registerPlayerCardRef={registerPlayerCardRef}
           />
         );
       })}

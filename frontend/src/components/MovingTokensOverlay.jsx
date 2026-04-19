@@ -67,6 +67,10 @@ function MovingTokensOverlay({
   const [measuredTokens, setMeasuredTokens] = useState([]);
   const lastMeasurementSignatureRef = useRef("");
 
+  // DOM-измерение через useLayoutEffect + setState — идиоматический паттерн для
+  // расчёта абсолютных координат клеток доски. Сигнатура гарантирует,
+  // что setState вызывается только при реальной смене активных анимаций, так что
+  // cascading render ограничен одним проходом на анимацию.
   useLayoutEffect(() => {
     const movingEntries = Object.entries(movingTokenEffects ?? {});
     const measurementSignature = movingEntries
@@ -80,6 +84,7 @@ function MovingTokensOverlay({
     lastMeasurementSignatureRef.current = measurementSignature;
 
     if (!measurementSignature || !boardRef?.current) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setMeasuredTokens([]);
       return;
     }

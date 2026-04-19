@@ -671,7 +671,7 @@ function buildBoardTilesLayerProps({
   const { jailPosition } = constants;
   const { getPlayerColor, renderPlayerToken } = helpers;
   const { handleBoardCellFocus } = handlers;
-  const { boardCellRefs } = refs;
+  const { registerBoardCellRef } = refs;
 
   return {
     boardCells,
@@ -688,7 +688,7 @@ function buildBoardTilesLayerProps({
     movedCellIndexSet,
     currentPlayerId: playerId,
     getPlayerColor,
-    boardCellRefs,
+    registerBoardCellRef,
     onFocusCell: handleBoardCellFocus,
     renderPlayerToken,
   };
@@ -732,7 +732,7 @@ function buildBoardPlayersGridProps({
   const { selectedTradeTargetId } = tradeState;
   const { getRentHint, getPlayerColor } = helpers;
   const { handlePlayerCardFocus } = handlers;
-  const { playerCardRefs } = refs;
+  const { registerPlayerCardRef } = refs;
 
   return {
     players: room.players,
@@ -751,7 +751,7 @@ function buildBoardPlayersGridProps({
     getOwnedCellsByPlayer,
     getMortgagedOwnedCellCount,
     onFocusPlayer: handlePlayerCardFocus,
-    playerCardRefs,
+    registerPlayerCardRef,
   };
 }
 
