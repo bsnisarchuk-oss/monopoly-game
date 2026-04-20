@@ -384,6 +384,9 @@ h1 {
   box-shadow:
     inset 0 0 0 1px rgba(47, 67, 128, 0.08),
     0 14px 26px rgba(47, 67, 128, 0.08);
+  /* Step E: текст подсказки сменяется по состоянию игры (короткое -> длинное),
+     а карточка имеет переменную высоту. Изолируем чтобы не сдвигать соседей. */
+  contain: layout;
 }
 
 .action-guide-card.is-active {
@@ -777,6 +780,10 @@ h1 {
   background: rgba(244, 248, 255, 0.92);
   color: #314260;
   box-shadow: inset 0 0 0 1px rgba(47, 67, 128, 0.1);
+  /* Step E: добавление новых событий (RecentEventsCard) меняет высоту списка
+     каждый ход — без containment это пушит соседние блоки и даёт CLS-«линию»
+     на ~1.5с движения фишки. layout-only (без paint), чтобы не обрезать тени. */
+  contain: layout;
 }
 
 .board-center .recent-events-card {
@@ -2226,10 +2233,10 @@ h1 {
   transform: translate3d(var(--player-token-overlay-x, 0), var(--player-token-overlay-y, 0), 0)
     translate(-50%, -50%) scale(var(--player-token-overlay-scale, 1));
   will-change: transform;
+  contain: layout paint;
   box-shadow:
     0 0 0 3px rgba(255, 255, 255, 0.96),
-    0 0 0 5px var(--player-token-color, #304467),
-    0 10px 22px rgba(31, 42, 43, 0.24);
+    0 0 0 5px var(--player-token-color, #304467);
 }
 
 .moving-tokens-overlay {
@@ -2281,7 +2288,22 @@ h1 {
     0 0 0 2px rgba(255, 255, 255, 0.9),
     0 0 0 4px color-mix(in srgb, var(--player-token-color, #304467) 76%, white 24%),
     0 4px 10px rgba(7, 10, 15, 0.3);
-  animation: token-active-pulse 1600ms ease-in-out infinite;
+  animation: token-active-scale 1600ms ease-in-out infinite;
+  will-change: transform;
+}
+
+.player-token.is-active-turn::after {
+  content: "";
+  position: absolute;
+  inset: -3px;
+  border-radius: 50%;
+  pointer-events: none;
+  box-shadow:
+    0 0 0 3px color-mix(in srgb, var(--player-token-color, #304467) 82%, white 18%),
+    0 8px 16px rgba(7, 10, 15, 0.34);
+  opacity: 0;
+  animation: token-active-glow 1600ms ease-in-out infinite;
+  will-change: opacity;
 }
 
 .player-token.is-moving {
@@ -2310,52 +2332,36 @@ h1 {
   }
 }
 
-@keyframes token-active-pulse {
-  0% {
+@keyframes token-active-scale {
+  0%,
+  100% {
     transform: translate3d(0, 0, 0) scale(1);
-    box-shadow:
-      0 0 0 2px rgba(255, 255, 255, 0.9),
-      0 0 0 4px color-mix(in srgb, var(--player-token-color, #304467) 76%, white 24%),
-      0 4px 10px rgba(7, 10, 15, 0.3);
   }
 
   50% {
     transform: translate3d(0, 0, 0) scale(1.08);
-    box-shadow:
-      0 0 0 2px rgba(255, 255, 255, 0.96),
-      0 0 0 7px color-mix(in srgb, var(--player-token-color, #304467) 82%, white 18%),
-      0 8px 16px rgba(7, 10, 15, 0.34);
-  }
-
-  100% {
-    transform: translate3d(0, 0, 0) scale(1);
-    box-shadow:
-      0 0 0 2px rgba(255, 255, 255, 0.9),
-      0 0 0 4px color-mix(in srgb, var(--player-token-color, #304467) 76%, white 24%),
-      0 4px 10px rgba(7, 10, 15, 0.3);
   }
 }
 
-@keyframes avatar-active-pulse {
-  0% {
-    box-shadow:
-      inset 0 1px 0 rgba(255, 255, 255, 0.16),
-      0 0 0 3px rgba(255, 255, 255, 0.82),
-      0 0 0 6px var(--player-card-accent, #d94f3d);
+@keyframes token-active-glow {
+  0%,
+  100% {
+    opacity: 0;
   }
 
   50% {
-    box-shadow:
-      inset 0 1px 0 rgba(255, 255, 255, 0.16),
-      0 0 0 3px rgba(255, 255, 255, 0.82),
-      0 0 0 8px var(--player-card-accent, #d94f3d);
+    opacity: 1;
+  }
+}
+
+@keyframes avatar-active-glow {
+  0%,
+  100% {
+    opacity: 0;
   }
 
-  100% {
-    box-shadow:
-      inset 0 1px 0 rgba(255, 255, 255, 0.16),
-      0 0 0 3px rgba(255, 255, 255, 0.82),
-      0 0 0 6px var(--player-card-accent, #d94f3d);
+  50% {
+    opacity: 1;
   }
 }
 
@@ -2382,8 +2388,10 @@ h1 {
   .board-center-focus-target.is-guide-flash,
   .cell-tile.is-move-target,
   .player-token.is-active-turn,
+  .player-token.is-active-turn::after,
   .player-token.is-moving,
-  .board-card.is-current-turn .board-card-avatar {
+  .board-card.is-current-turn .board-card-avatar,
+  .board-card.is-current-turn .board-card-avatar::after {
     animation: none;
   }
 }
@@ -2746,6 +2754,10 @@ h1 {
   box-shadow:
     inset 3px 0 0 var(--player-card-accent-soft),
     0 18px 36px rgba(7, 10, 15, 0.26);
+  /* Step E: баланс и stats внутри карточки игрока меняются на каждом ходе
+     ($100 -> $1000 -> ... — текст шире). contain: layout не даёт этим
+     изменениям пушить соседние карточки игроков. */
+  contain: layout;
 }
 
 .board-card.is-you {
@@ -2773,7 +2785,22 @@ h1 {
 }
 
 .board-card.is-current-turn .board-card-avatar {
-  animation: avatar-active-pulse 1600ms ease-in-out infinite;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.16),
+    0 0 0 3px rgba(255, 255, 255, 0.82),
+    0 0 0 6px var(--player-card-accent, #d94f3d);
+}
+
+.board-card.is-current-turn .board-card-avatar::after {
+  content: "";
+  position: absolute;
+  inset: -2px;
+  border-radius: 50%;
+  pointer-events: none;
+  box-shadow: 0 0 0 2px var(--player-card-accent, #d94f3d);
+  opacity: 0;
+  animation: avatar-active-glow 1600ms ease-in-out infinite;
+  will-change: opacity;
 }
 
 .board-card[role="button"] {
@@ -2799,6 +2826,7 @@ h1 {
   width: 44px;
   height: 44px;
   border-radius: 50%;
+  position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -2852,6 +2880,9 @@ h1 {
   letter-spacing: -0.04em;
   line-height: 1;
   color: #f8fbff;
+  /* tabular-nums: баланс ($100 → $1000) меняется почти каждый ход; моноширинные
+     цифры убирают колебание ширины строки и связанный CLS на соседних карточках. */
+  font-variant-numeric: tabular-nums;
 }
 
 .board-card-stats {
@@ -2868,6 +2899,8 @@ h1 {
 
 .board-card-stats strong {
   color: #f7f9ff;
+  /* Цифры статистики (штрафы, долги, активы) — тоже tabular-nums, по той же причине. */
+  font-variant-numeric: tabular-nums;
 }
 
 .board-card-footer {

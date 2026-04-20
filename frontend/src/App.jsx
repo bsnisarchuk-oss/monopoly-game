@@ -774,6 +774,23 @@ function App() {
       });
     }
 
+    // Короткое замыкание: если room_version не изменилась на той же комнате —
+    // не трогаем state, иначе React перерисует всё дерево каждые 2.5s на polling,
+    // что сбивает WAAPI-анимации и ухудшает INP.
+    const prevRoom = currentRoomRef.current;
+    const prevVersion = getRoomVersion(prevRoom);
+    const nextVersion = getRoomVersion(sanitizedNextRoom);
+    const isSameRoomCode =
+      prevRoom?.room_code != null &&
+      prevRoom.room_code === sanitizedNextRoom.room_code;
+    const isSameVersion =
+      prevVersion !== null && nextVersion !== null && prevVersion === nextVersion;
+
+    if (isSameRoomCode && isSameVersion) {
+      // Версия та же — пропускаем setState, дерево не ребилдится.
+      return true;
+    }
+
     currentRoomRef.current = sanitizedNextRoom;
     activeRoomCodeRef.current = sanitizedNextRoom.room_code ?? null;
     startTransition(() => {

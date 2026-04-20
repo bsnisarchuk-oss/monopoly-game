@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState } from "react";
+import { memo, useLayoutEffect, useRef, useState } from "react";
 import PlayerToken from "./PlayerToken";
 
 const TOKEN_HOP_HEIGHT_PX = 9;
@@ -154,4 +154,9 @@ function MovingTokensOverlay({
   );
 }
 
-export default MovingTokensOverlay;
+// React.memo с дефолтным shallow-сравнением: все props стабильны после Step D/1
+// (boardRef/boardCellRefs — refs; players — стабильно через короткое замыкание
+// room_version; movingTokenEffects — меняется только на старте/конце анимации;
+// getPlayerColor — useCallback). Memo предотвращает сброс useLayoutEffect и
+// перезапуск WAAPI-анимации при ребилдах родителя, не связанных с движением.
+export default memo(MovingTokensOverlay);

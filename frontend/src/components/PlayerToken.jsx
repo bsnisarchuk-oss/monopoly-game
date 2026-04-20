@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef } from "react";
+import { memo, useLayoutEffect, useRef } from "react";
 
 function PlayerToken({
   player,
@@ -33,7 +33,7 @@ function PlayerToken({
 
     const animation = element.animate(overlayAnimationKeyframes, {
       duration: overlayAnimationDurationMs,
-      easing: "linear",
+      easing: "ease-in-out",
       fill: "both",
     });
 
@@ -70,4 +70,11 @@ function PlayerToken({
   );
 }
 
-export default PlayerToken;
+// React.memo с дефолтным shallow-сравнением: для НЕ-overlay токенов (на клетках)
+// все props — примитивы или стабильные ссылки (player из currentRoom стабилен после
+// Step D/1 short-circuit, tokenColor — строка, isActiveTurn — bool). Это убирает
+// массовый ребилд всех токенов на каждой реконсиляции родителя.
+// Для overlay-токенов overlayPosition/overlayAnimationKeyframes — новые объекты при
+// каждом measure, но measure происходит только при смене animationId, поэтому memo
+// не вредит и в overlay-режиме.
+export default memo(PlayerToken);
