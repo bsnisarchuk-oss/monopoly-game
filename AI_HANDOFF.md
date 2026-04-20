@@ -8,7 +8,7 @@
 
 ## STATUS
 
-`2026-04-20` — **Корень stutter найден: у пользователя был выключен Chrome Hardware Acceleration.** После Step E метрики стали зелёные (CLS 0.49 → 0.03, сервер 3ms, Scheduler редкий), но визуально stutter оставался. DevTools Rendering → Frame Rate показал **4.8 FPS** и **GPU raster: off**. `chrome://gpu` — почти всё software-only (`Compositing: Software only`, `Rasterization: Software only`, `WebGL: unavailable`). Причина: в `chrome://settings/system` была снята галочка "Use hardware acceleration when available". После включения + рестарта Chrome — игра плавная. Steps A–E всё ещё ценные (CLS-фикс реальный, React.memo обоснованный, short-circuit работает), но визуально их эффект проявляется только при GPU-акселерации. Урок положен в `memory/perf_lessons.md` как "Урок №0". **Сейчас коммитим Steps A–E одним коммитом.**
+`2026-04-20` — Перф-трек закрыт. Steps A–E реализованы и готовы к коммиту (CLS 0.49 → 0.03). Корень оставшегося stutter оказался **не в коде**, а в выключенной галочке "Use hardware acceleration when available" в Chrome — после включения игра плавная (см. `memory/perf_lessons.md` "Урок №0"). Следующий большой трек — **Task #18: SSE для push-репликации состояния комнаты** (лаг между мониторами до 2.5s на polling). Этот чат закрывается по переполнению контекста; работа продолжится в новом чате с чистым состоянием.
 
 ---
 
@@ -157,6 +157,26 @@ Optimize token movement: reduce reconciliation, repaints and layout shifts
 
 Последние проверенные изменения с результатами `lint/build/test/smoke`.
 При новой верификации — добавляй сверху, старые записи сдвигай вниз.
+
+- `2026-04-20` — **Task #18 Фаза 1 — backend SSE (smoke пройден, готово к коммиту)**:
+  - `backend/room_events.py` (новый, ~95 строк) — thin pub/sub поверх `asyncio.Queue`. `subscribe/unsubscribe/publish/subscriber_count/reset_for_tests`. `_QUEUE_MAX_SIZE=8`, latest-wins drop при переполнении. `defaultdict[str, set]` для O(1) подписок по `room_code`.
+  - `backend/room_store.py` — `import room_events` и в `_touch_room` publish полного snapshot'а (`_build_room_response`) при `increment_version=True`. GET-чтения не публикуют. Также добавлена публичная `build_room_snapshot(room_code, include_board)` как алиас для `get_room` — чтобы SSE-хендлер не лез в приватные имена.
+  - `backend/main.py` — новый endpoint `GET /rooms/{room_code}/stream` через `sse_starlette.EventSourceResponse`. Протокол: одно событие `snapshot` при connect (full room state), потом по событию на каждую мутацию. Heartbeat 15s, disconnect через `request.is_disconnected()`. `asyncio.wait_for(queue.get(), timeout=15s)` гоняет цикл чтобы ловить disconnect даже без новых событий.
+  - `backend/tests/test_sse_stream.py` (новый, ~155 строк, unittest + `asyncio.run`) — 10 тестов: pub/sub изоляция + интеграция с `_touch_room`. HTTP-слой не тестируется (Starlette TestClient для SSE нетривиален; smoke через `curl -N` на Windows).
+  - Решения: (B) full-push snapshot, polling удалим после Фазы 2, heartbeat 15s, зависимость `sse-starlette`.
+  - **Sandbox проверки:**
+    - `python3 -m py_compile room_events.py room_store.py main.py tests/test_sse_stream.py` ✅.
+    - Pure pub/sub smoke (5 инвариантов без fastapi) ✅ — `subscribe/unsubscribe` count, fan-out на N подписчиков, drop-oldest при переполнении queue (8 из 9 сохранены), publish без подписчиков = noop, идемпотентный unsubscribe.
+  - **Windows проверки пройдены:**
+    - `.venv\Scripts\pip.exe install sse-starlette` ✅ (3.3.4).
+    - `..\.venv\Scripts\python.exe -m unittest discover tests` ✅ — **77 tests, 0.073s, OK** (67 старых + 10 новых).
+    - `.venv\Scripts\uvicorn.exe main:app` ✅ — `Application startup complete`, `GET /` возвращает `{"message":"Backend is working"}`.
+    - SSE smoke end-to-end ✅:
+      - `curl.exe -N http://127.0.0.1:8000/rooms/0F2LGH/stream` → сразу пришёл `event: snapshot` c baseline room_version=1, players=[Host], is_ready=false.
+      - Heartbeat `: ping - 2026-04-20 19:10:49...` каждые ~15s как ожидалось.
+      - `POST /rooms/0F2LGH/ready` с `is_ready=true` → **немедленно** в stream-терминал прилетел второй `event: snapshot` с `is_ready=true, room_version=2`.
+    - Подтверждено: мутация на сервере → push через sub-секунду, лаг 2.5s от polling в этом канале отсутствует.
+  - **Следующий шаг — Фаза 2 (frontend):** хук `useRoomStream(roomCode)`, замена `setInterval`-polling в `App.jsx:1711-1753` на `EventSource`, удаление polling-пути. Детали проработаем в новой IN_PROGRESS записи после коммита backend-части.
 
 - `2026-04-20` — **GPU acceleration был выключен в Chrome** — корень оставшегося stutter:
   - После всех Steps A-E метрики в DevTools были идеальны (CLS 0.03, сервер 3ms, Scheduler редкий), но визуально stutter оставался **на обоих мониторах, на всём пути движения фишки**.

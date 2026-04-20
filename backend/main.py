@@ -1,10 +1,16 @@
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
+import asyncio
+import json
 
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+from sse_starlette.sse import EventSourceResponse
+
+import room_events
 from board_data import get_board_cells
 from room_store import (
     auction_pending_purchase,
     bid_in_auction,
+    build_room_snapshot,
     buy_property,
     create_room,
     declare_bankruptcy,
@@ -61,6 +67,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Частота heartbeat: достаточно редкая, чтобы не спамить, но чаще стандартных
+# idle-таймаутов reverse-proxy (Nginx 60s, Cloudflare 100s).
+_SSE_HEARTBEAT_SECONDS = 15
+# Если очередь подписчика пуста дольше heartbeat — шлём ping-comment.
+_SSE_QUEUE_WAIT_SECONDS = _SSE_HEARTBEAT_SECONDS
+
 
 @app.get("/")
 def read_root():
@@ -85,6 +97,52 @@ def join_room_endpoint(payload: JoinRoomRequest):
 @app.get("/rooms/{room_code}", response_model=RoomResponse)
 def get_room_endpoint(room_code: str, include_board: bool = False):
     return get_room(room_code, include_board=include_board)
+
+
+@app.get("/rooms/{room_code}/stream")
+async def stream_room_endpoint(room_code: str, request: Request):
+    """Server-Sent Events channel: push full room snapshot on every mutation.
+
+    Protocol:
+      * On connect the server sends one ``snapshot`` event with the current
+        room state so the client has a baseline without a separate GET.
+      * Every subsequent ``_touch_room`` in ``room_store`` fans a fresh snapshot
+        through ``room_events.publish`` and the handler forwards it here.
+      * ``sse_starlette`` handles heartbeat comments and disconnect detection.
+
+    TODO: on room deletion emit a terminal ``gone`` event so the client can
+    clear its session immediately (сейчас клиент узнаёт это при следующем
+    действии через 404).
+    """
+    # build_room_snapshot поднимет 404 если комнаты нет — FastAPI его подхватит.
+    # Важно: сначала snapshot, потом subscribe, чтобы на stream открытия у нас
+    # уже был валидный room_code и клиент получил гарантированно свежий state
+    # даже если мутация случилась между subscribe и первым yield.
+    initial_snapshot = build_room_snapshot(room_code)
+    queue = room_events.subscribe(initial_snapshot["room_code"])
+
+    async def event_generator():
+        try:
+            yield {"event": "snapshot", "data": json.dumps(initial_snapshot)}
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    payload = await asyncio.wait_for(
+                        queue.get(), timeout=_SSE_QUEUE_WAIT_SECONDS
+                    )
+                except asyncio.TimeoutError:
+                    # sse-starlette сам шлёт ping, но на всякий случай
+                    # гоняем цикл — проверяем disconnect.
+                    continue
+                yield {"event": "snapshot", "data": json.dumps(payload)}
+        finally:
+            room_events.unsubscribe(initial_snapshot["room_code"], queue)
+
+    return EventSourceResponse(
+        event_generator(),
+        ping=_SSE_HEARTBEAT_SECONDS,
+    )
 
 
 @app.post("/rooms/{room_code}/ready", response_model=RoomActionResponse)

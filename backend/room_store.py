@@ -9,6 +9,8 @@ from board_data import BOARD_CELLS, get_board_cells
 from card_data import draw_card
 from fastapi import HTTPException
 
+import room_events
+
 MAX_PLAYERS = 4
 MIN_PLAYERS_TO_START = 2
 ROOM_CODE_LENGTH = 6
@@ -148,6 +150,12 @@ def _touch_room(room: dict, *, increment_version: bool = True) -> None:
     if increment_version:
         room["room_version"] = room.get("room_version", 0) + 1
     room["last_activity"] = time.time()
+
+    # SSE push: fan-out полный snapshot всем подписчикам комнаты. Публикуем
+    # только когда состояние реально мутировало (increment_version=True), иначе
+    # клиент получит лишние события без полезной нагрузки.
+    if increment_version:
+        room_events.publish(room["room_code"], _build_room_response(room))
 
 
 def _append_recent_event(
@@ -1226,6 +1234,16 @@ def get_room(room_code: str, include_board: bool = False) -> dict:
     with _rooms_lock:
         room = _find_room_or_raise(normalized_room_code)
         return _build_room_response(room, include_board=include_board)
+
+
+def build_room_snapshot(room_code: str, include_board: bool = False) -> dict:
+    """Thread-safe snapshot getter used by the SSE handler on stream open.
+
+    Alias for :func:`get_room` — kept as a separate name so the SSE code path
+    reads more intentionally and we can evolve the two independently later
+    (e.g. strip player-private info from SSE payloads when we add spectators).
+    """
+    return get_room(room_code, include_board=include_board)
 
 
 def set_player_ready(room_code: str, player_token: str, is_ready: bool) -> dict:
