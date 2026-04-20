@@ -18,9 +18,10 @@ import {
   hasRecentEventReferences,
 } from "./components/recentEventsHelpers";
 import { useDeskCollapse } from "./hooks/useDeskCollapse";
+import useRoomStream from "./hooks/useRoomStream";
 import { useTokenMovement } from "./hooks/useTokenMovement";
+import { API_BASE_URL } from "./apiConfig";
 
-const API_BASE_URL = "http://127.0.0.1:8000";
 const SESSION_STORAGE_KEY = "monopoly_player_session";
 const RECENT_EVENTS_HELP_COLLAPSED_KEY = "monopoly_recent_events_help_collapsed";
 const JAIL_FINE_AMOUNT = 50;
@@ -1691,6 +1692,8 @@ function App() {
       });
   }, []);
 
+  // Lifecycle-only effect: при выходе из комнаты сбрасываем UI-state recent
+  // events. Сетевая подписка вынесена в `useRoomStream` ниже.
   useEffect(() => {
     if (!currentRoomCode) {
       setRecentEventsSelectedKinds({});
@@ -1705,53 +1708,42 @@ function App() {
       recentEventHighlightTimeoutsRef.current = {};
       recentEventsRoomCodeRef.current = null;
       highestSeenRecentEventIdRef.current = 0;
-      return undefined;
     }
+  }, [currentRoomCode]);
 
-    const intervalId = setInterval(() => {
+  // SSE: сервер сам пушит snapshot на каждом `_touch_room`. Заменяет старый
+  // polling с интервалом 2.5s (Task #18). `isActionInFlight` guard сохранён —
+  // во время выполнения локального action мы игнорируем приходящие snapshot'ы,
+  // чтобы не перезаписать оптимистичные изменения до ответа сервера.
+  useRoomStream(currentRoomCode, {
+    onSnapshot: (data) => {
       if (isActionInFlightRef.current) {
         return;
       }
-
-      fetch(`${API_BASE_URL}/rooms/${currentRoomCode}`)
-        .then((response) => {
-          if (response.status === 404) {
-            clearStoredSession();
-            clearCurrentRoomStateRef.current();
-            setRecentEventsSelectedKinds({});
-            setRecentEventsExpandedGroups({});
-            setFreshRecentEventIds({});
-            setFocusedRecentEventId(null);
-            setFocusedEventCellIndex(null);
-            setFocusedEventPlayerIds([]);
-            Object.values(recentEventHighlightTimeoutsRef.current).forEach((timeoutId) => {
-              window.clearTimeout(timeoutId);
-            });
-            recentEventHighlightTimeoutsRef.current = {};
-            recentEventsRoomCodeRef.current = null;
-            highestSeenRecentEventIdRef.current = 0;
-            setPlayerId("");
-            setPlayerToken("");
-            setStatus("The room no longer exists.");
-            return;
-          }
-          return response.json().then((data) => {
-            if (isActionInFlightRef.current) {
-              return;
-            }
-
-            applyIncomingRoomStateRef.current(data, {
-              expectedRoomCode: currentRoomCode,
-            });
-          });
-        })
-        .catch(() => {});
-    }, 2500);
-
-    return () => {
-      clearInterval(intervalId);
-    };
-  }, [currentRoomCode]);
+      applyIncomingRoomStateRef.current(data, {
+        expectedRoomCode: currentRoomCode,
+      });
+    },
+    onGone: () => {
+      clearStoredSession();
+      clearCurrentRoomStateRef.current();
+      setRecentEventsSelectedKinds({});
+      setRecentEventsExpandedGroups({});
+      setFreshRecentEventIds({});
+      setFocusedRecentEventId(null);
+      setFocusedEventCellIndex(null);
+      setFocusedEventPlayerIds([]);
+      Object.values(recentEventHighlightTimeoutsRef.current).forEach((timeoutId) => {
+        window.clearTimeout(timeoutId);
+      });
+      recentEventHighlightTimeoutsRef.current = {};
+      recentEventsRoomCodeRef.current = null;
+      highestSeenRecentEventIdRef.current = 0;
+      setPlayerId("");
+      setPlayerToken("");
+      setStatus("The room no longer exists.");
+    },
+  });
 
   useEffect(() => {
     if (!currentRoomCode) {

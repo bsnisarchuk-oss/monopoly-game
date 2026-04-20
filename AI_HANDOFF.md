@@ -158,7 +158,28 @@ Optimize token movement: reduce reconciliation, repaints and layout shifts
 Последние проверенные изменения с результатами `lint/build/test/smoke`.
 При новой верификации — добавляй сверху, старые записи сдвигай вниз.
 
-- `2026-04-20` — **Task #18 Фаза 1 — backend SSE (smoke пройден, готово к коммиту)**:
+- `2026-04-20` — **Task #18 Фаза 2 — frontend SSE (smoke пройден, готово к коммиту)**:
+  - `frontend/src/apiConfig.js` (новый, 3 строки) — вынесена константа `API_BASE_URL`; раньше она жила только внутри `App.jsx`, теперь импорт из двух мест (App + новый хук), single source of truth.
+  - `frontend/src/hooks/useRoomStream.js` (новый, ~75 строк) — обёртка над `EventSource`. API: `useRoomStream(roomCode, { onSnapshot, onGone })`. Ключевые решения:
+    - callbacks живут в `useRef`, обновляются через отдельные `useEffect` — стрим не пересоздаётся при каждом ререндере родителя.
+    - `addEventListener("snapshot", ...)` (а не `onmessage`) — ловим именно наш тип события.
+    - `onGone` вызывается только при `readyState === EventSource.CLOSED` в `onerror`. Это покрывает 404 "room not found" (сервер отвечает сразу, браузер не retries). Транзитные сетевые ошибки остаются в `CONNECTING`, EventSource сам reconnect'ит — мы их не трогаем.
+    - JSON.parse обёрнут в try/catch с `console.warn` — битый payload не ломает поток.
+  - `frontend/src/App.jsx` — удалён `setInterval` (~45 строк старого polling), разбит старый монолитный `useEffect([currentRoomCode])` на:
+    - Lifecycle-only `useEffect` (reset recent events UI при выходе из комнаты, **без** сетевой логики).
+    - Вызов `useRoomStream(currentRoomCode, { onSnapshot, onGone })` на верхнем уровне компонента.
+    - `onSnapshot` дёргает тот же `applyIncomingRoomStateRef.current(data, { expectedRoomCode })` с `isActionInFlightRef` guard'ом — оптимистичные изменения не перезаписываются.
+    - `onGone` повторяет весь legacy 404-cleanup: `clearStoredSession`, `clearCurrentRoomStateRef`, reset recent events, `setStatus("The room no longer exists.")`, очистка player_id/player_token.
+    - Убран `const API_BASE_URL = ...` (24-я строка), вместо `import { API_BASE_URL } from "./apiConfig"`.
+  - **Sandbox проверки:**
+    - `./node_modules/.bin/eslint .` ✅ — 0 errors, 0 warnings.
+    - `vite build` нельзя прогнать в sandbox (rolldown-binding Linux native недоступен).
+  - **Windows проверки пройдены:**
+    - `npm.cmd run build` ✅ — vite v8.0.3, 49 modules (+2: `useRoomStream.js` + `apiConfig.js`), **319.34 KiB / 92.32 KiB gzip**, 257ms. Никаких ошибок/варнингов.
+    - Smoke в двух вкладках браузера ✅ — действия в одной мгновенно отображаются в другой; лага 2.5s больше нет; Network показывает один `GET /rooms/{code}/stream` с EventStream вместо бесконечного polling-пинга.
+  - **Готово к коммиту.**
+
+- `2026-04-20` — **Task #18 Фаза 1 — backend SSE (закоммичено `6648ae3`)**:
   - `backend/room_events.py` (новый, ~95 строк) — thin pub/sub поверх `asyncio.Queue`. `subscribe/unsubscribe/publish/subscriber_count/reset_for_tests`. `_QUEUE_MAX_SIZE=8`, latest-wins drop при переполнении. `defaultdict[str, set]` для O(1) подписок по `room_code`.
   - `backend/room_store.py` — `import room_events` и в `_touch_room` publish полного snapshot'а (`_build_room_response`) при `increment_version=True`. GET-чтения не публикуют. Также добавлена публичная `build_room_snapshot(room_code, include_board)` как алиас для `get_room` — чтобы SSE-хендлер не лез в приватные имена.
   - `backend/main.py` — новый endpoint `GET /rooms/{room_code}/stream` через `sse_starlette.EventSourceResponse`. Протокол: одно событие `snapshot` при connect (full room state), потом по событию на каждую мутацию. Heartbeat 15s, disconnect через `request.is_disconnected()`. `asyncio.wait_for(queue.get(), timeout=15s)` гоняет цикл чтобы ловить disconnect даже без новых событий.
